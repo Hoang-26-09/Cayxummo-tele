@@ -1,37 +1,69 @@
-// ==================== CẤU HÌNH FIREBASE ====================
-const CONFIG = {
-    firebase: {
-        apiKey: "AIzaSyCbevkIQrQ7vw7RegFrYfTL86z-8feHtUM",
-        authDomain: "cay-xu-mmo.firebaseapp.com",
-        databaseURL: "https://cay-xu-mmo-default-rtdb.asia-southeast1.firebasedatabase.app",
-        projectId: "cay-xu-mmo",
-        storageBucket: "cay-xu-mmo.firebasestorage.app",
-        messagingSenderId: "186442076157",
-        appId: "1:186442076157:web:52d64c0239b0ae2d35d394",
-        measurementId: "G-KLCC12WSG5"
-    },
-    DAILY_REWARDS: [50, 50, 50, 50, 100, 150, 300],
-    PVP_TIMEOUT: 30,
-    PVP_FEE: 0.1,
-    MIN_WITHDRAW: 20000,
-    MAX_WITHDRAW: 100000,
-    LINKS_FOR_CHEST: 5,
-    LINK_COOLDOWN: 300000,
-    FRIEND_REWARDS: { 2: 100, 5: 300, 10: 1000 },
-    DEFAULT_EXCHANGE_RATE: 10
+// ==================== CẤU HÌNH MẶC ĐỊNH ====================
+const DEFAULT_CONFIG = {
+    dailyRewards: [50, 50, 50, 50, 100, 150, 300],
+    linksForChest: 5,
+    linkCooldown: 300000,
+    maxCodesPerDay: 20,
+    chestRewards: [50, 80, 100, 150, 200, 300, 500, 1000],
+    friendRewards: { 2: 100, 5: 300, 10: 1000 },
+    maxFriendsPerDay: 50,
+    minBet: 100,
+    maxBet: 100000,
+    pvpFee: 0.1,
+    pvpTimeout: 30,
+    minWithdraw: 20000,
+    maxWithdraw: 100000,
+    maxWithdrawPerDay: 3,
+    exchange_rate: 10
 };
 
-// ==================== BẮT LỖI HIỂN THỊ ====================
+let CONFIG = { ...DEFAULT_CONFIG };
+
+// ==================== FIREBASE ====================
+const firebaseConfig = {
+    apiKey: "AIzaSyCbevkIQrQ7vw7RegFrYfTL86z-8feHtUM",
+    authDomain: "cay-xu-mmo.firebaseapp.com",
+    databaseURL: "https://cay-xu-mmo-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "cay-xu-mmo",
+    storageBucket: "cay-xu-mmo.firebasestorage.app",
+    messagingSenderId: "186442076157",
+    appId: "1:186442076157:web:52d64c0239b0ae2d35d394",
+    measurementId: "G-KLCC12WSG5"
+};
+
+// ==================== BẮT LỖI ====================
 window.onerror = function(msg, url, line) {
     document.getElementById('loadingScreen').innerHTML =
-        '<div style="color:red;padding:20px;"><h3>❌ Lỗi JavaScript:</h3><p>' + msg + '</p><p>Dòng: ' + line + '</p></div>';
+        `<div style="color:red;padding:20px;"><h3>❌ Lỗi JavaScript:</h3><p>${msg}</p><p>Dòng: ${line}</p></div>`;
 };
 
 // ==================== FIREBASE MANAGER ====================
 class FirebaseManager {
     constructor() {
-        if (!firebase.apps.length) firebase.initializeApp(CONFIG.firebase);
+        if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
         this.db = firebase.database();
+    }
+
+    async loadConfig() {
+        const snap = await this.db.ref('admin_config').once('value');
+        const saved = snap.val() || {};
+        CONFIG = {
+            dailyRewards: saved.dailyRewards || DEFAULT_CONFIG.dailyRewards,
+            linksForChest: saved.linksForChest || DEFAULT_CONFIG.linksForChest,
+            linkCooldown: saved.linkCooldown || DEFAULT_CONFIG.linkCooldown,
+            maxCodesPerDay: saved.maxCodesPerDay || DEFAULT_CONFIG.maxCodesPerDay,
+            chestRewards: saved.chestRewards || DEFAULT_CONFIG.chestRewards,
+            friendRewards: saved.friendRewards || DEFAULT_CONFIG.friendRewards,
+            maxFriendsPerDay: saved.maxFriendsPerDay || DEFAULT_CONFIG.maxFriendsPerDay,
+            minBet: saved.minBet || DEFAULT_CONFIG.minBet,
+            maxBet: saved.maxBet || DEFAULT_CONFIG.maxBet,
+            pvpFee: saved.pvpFee !== undefined ? saved.pvpFee : DEFAULT_CONFIG.pvpFee,
+            pvpTimeout: saved.pvpTimeout || DEFAULT_CONFIG.pvpTimeout,
+            minWithdraw: saved.minWithdraw || DEFAULT_CONFIG.minWithdraw,
+            maxWithdraw: saved.maxWithdraw || DEFAULT_CONFIG.maxWithdraw,
+            maxWithdrawPerDay: saved.maxWithdrawPerDay || DEFAULT_CONFIG.maxWithdrawPerDay,
+            exchange_rate: saved.exchange_rate || DEFAULT_CONFIG.exchange_rate
+        };
     }
 
     async createUser(uid, data) {
@@ -59,8 +91,8 @@ class FirebaseManager {
     }
 
     async isAdmin(uid) {
-        const snap = await this.db.ref('admin_config/admin_ids').once('value');
-        return (snap.val() || []).includes(uid);
+        // Hardcode admin ID: 5852621653
+        return uid === '5852621653' || uid === 'test123';
     }
 
     async dailyCheckin(uid) {
@@ -69,7 +101,7 @@ class FirebaseManager {
         const yesterday = new Date(Date.now() - 86400000).toDateString();
         if (user.lastDaily === today) return { status: 'already' };
         let streak = user.lastDaily === yesterday ? (user.dailyStreak >= 7 ? 1 : user.dailyStreak + 1) : 1;
-        const reward = CONFIG.DAILY_REWARDS[streak - 1];
+        const reward = CONFIG.dailyRewards[streak - 1];
         await this.updateUser(uid, { dailyStreak: streak, lastDaily: today, balance: (user.balance || 0) + reward });
         return { status: 'ok', streak, reward };
     }
@@ -83,8 +115,8 @@ class FirebaseManager {
         if (!task) return { status: 'invalid' };
         const user = await this.getUser(uid);
         if ((user.codesUsed || []).includes(code)) return { status: 'used' };
-        if (user.lastLinkTime && Date.now() - user.lastLinkTime < CONFIG.LINK_COOLDOWN) {
-            return { status: 'cooldown', message: 'Đợi ' + Math.ceil((CONFIG.LINK_COOLDOWN - (Date.now() - user.lastLinkTime)) / 60000) + ' phút' };
+        if (user.lastLinkTime && Date.now() - user.lastLinkTime < CONFIG.linkCooldown) {
+            return { status: 'cooldown', message: 'Đợi ' + Math.ceil((CONFIG.linkCooldown - (Date.now() - user.lastLinkTime)) / 60000) + ' phút' };
         }
         const reward = task.reward || 100;
         await this.updateUser(uid, {
@@ -101,15 +133,14 @@ class FirebaseManager {
 
     async openChest(uid) {
         const user = await this.getUser(uid);
-        const progress = (user.completedLinks || 0) % CONFIG.LINKS_FOR_CHEST;
-        const isReady = (user.completedLinks || 0) >= CONFIG.LINKS_FOR_CHEST && progress === 0;
+        const progress = (user.completedLinks || 0) % CONFIG.linksForChest;
+        const isReady = (user.completedLinks || 0) >= CONFIG.linksForChest && progress === 0;
         if (!isReady) return { status: 'error', message: 'Chưa đủ link!' };
-        const rewards = [50, 80, 100, 150, 200, 300, 500, 1000];
-        const reward = rewards[Math.floor(Math.random() * rewards.length)];
+        const reward = CONFIG.chestRewards[Math.floor(Math.random() * CONFIG.chestRewards.length)];
         await this.updateUser(uid, {
             balance: (user.balance || 0) + reward,
             chestsOpened: (user.chestsOpened || 0) + 1,
-            completedLinks: (user.completedLinks || 0) - CONFIG.LINKS_FOR_CHEST
+            completedLinks: (user.completedLinks || 0) - CONFIG.linksForChest
         });
         return { status: 'ok', reward };
     }
@@ -122,7 +153,7 @@ class FirebaseManager {
         friends.push(friendId);
         await this.updateUser(uid, { friends });
         let bonus = 0;
-        for (let [k, v] of Object.entries(CONFIG.FRIEND_REWARDS)) {
+        for (let [k, v] of Object.entries(CONFIG.friendRewards)) {
             if (friends.length === parseInt(k)) { bonus = v; break; }
         }
         if (bonus > 0) { await this.addBalance(uid, bonus); return { status: 'reward', count: friends.length, bonus }; }
@@ -147,10 +178,10 @@ class FirebaseManager {
     async requestWithdraw(uid, data) {
         const user = await this.getUser(uid);
         const amount = parseInt(data.amount);
-        if (amount < CONFIG.MIN_WITHDRAW || amount > CONFIG.MAX_WITHDRAW) return { status: 'error', message: 'Số 🪙 không hợp lệ' };
+        if (amount < CONFIG.minWithdraw || amount > CONFIG.maxWithdraw) return { status: 'error', message: 'Số 🪙 không hợp lệ' };
         if (user.balance < amount) return { status: 'error', message: 'Không đủ số dư' };
         const rateSnap = await this.db.ref('admin_config/exchange_rate').once('value');
-        const rate = rateSnap.val() || CONFIG.DEFAULT_EXCHANGE_RATE;
+        const rate = rateSnap.val() || CONFIG.exchange_rate;
         const ref = this.db.ref('withdraw_requests').push();
         await ref.set({
             userId: uid, username: user.username, bank: data.bank,
@@ -204,13 +235,13 @@ class HomePage {
         let dailyHTML = '<div class="daily-grid">';
         for (let i = 1; i <= 7; i++) {
             let cls = ''; if (i <= streak) cls = 'claimed'; if (i === streak + 1 || (streak === 7 && i === 1)) cls = 'today';
-            dailyHTML += `<div class="daily-item ${cls}"><div class="day">Ngày ${i}</div><div class="reward">+${CONFIG.DAILY_REWARDS[i-1]} 🪙</div>${i<=streak?'✅':''}</div>`;
+            dailyHTML += `<div class="daily-item ${cls}"><div class="day">Ngày ${i}</div><div class="reward">+${CONFIG.dailyRewards[i-1]} 🪙</div>${i<=streak?'✅':''}</div>`;
         }
         dailyHTML += '</div>';
         this.container.innerHTML = `
             <div class="card"><div class="card-title">📅 Điểm danh hàng ngày</div>${dailyHTML}<button class="btn btn-gold" id="btnDaily">${u.lastDaily===new Date().toDateString()?'✅ Đã điểm danh':'🎁 Điểm danh nhận thưởng'}</button></div>
             <div class="card"><div class="card-title">📊 Thống kê của bạn</div><div class="grid-2"><div class="stat-card"><div class="stat-icon">🔗</div><div class="stat-value">${(u.completedLinks||0).toLocaleString()}</div><div class="stat-label">Link đã vượt</div></div><div class="stat-card"><div class="stat-icon">👥</div><div class="stat-value">${(u.friends||[]).length}</div><div class="stat-label">Bạn bè</div></div><div class="stat-card"><div class="stat-icon">🎁</div><div class="stat-value">${u.chestsOpened||0}</div><div class="stat-label">Rương đã mở</div></div><div class="stat-card"><div class="stat-icon">🏆</div><div class="stat-value">${(u.totalLinksWeekly||0).toLocaleString()}</div><div class="stat-label">Link tuần này</div></div></div></div>
-            <div class="card"><div class="card-title">🎯 Tiến độ mở rương</div><div class="progress-bar"><div class="progress-fill" style="width:${((u.completedLinks||0)%CONFIG.LINKS_FOR_CHEST)/CONFIG.LINKS_FOR_CHEST*100}%"></div></div><p style="text-align:center;font-size:13px;color:var(--text2);">${(u.completedLinks||0)%CONFIG.LINKS_FOR_CHEST}/${CONFIG.LINKS_FOR_CHEST} link</p></div>
+            <div class="card"><div class="card-title">🎯 Tiến độ mở rương</div><div class="progress-bar"><div class="progress-fill" style="width:${((u.completedLinks||0)%CONFIG.linksForChest)/CONFIG.linksForChest*100}%"></div></div><p style="text-align:center;font-size:13px;color:var(--text2);">${(u.completedLinks||0)%CONFIG.linksForChest}/${CONFIG.linksForChest} link</p></div>
         `;
         document.getElementById('btnDaily').onclick = () => this.doDaily();
     }
@@ -226,9 +257,9 @@ class TasksPage {
     async render() {
         const tasks = await FB.getTasks(); const activeTask = Object.values(tasks).find(t => t.active !== false);
         const completedLinks = this.userData.completedLinks || 0;
-        const progress = completedLinks % CONFIG.LINKS_FOR_CHEST;
-        const isReady = completedLinks >= CONFIG.LINKS_FOR_CHEST && progress === 0;
-        const cooldown = this.userData.lastLinkTime ? Math.max(0, CONFIG.LINK_COOLDOWN - (Date.now() - this.userData.lastLinkTime)) : 0;
+        const progress = completedLinks % CONFIG.linksForChest;
+        const isReady = completedLinks >= CONFIG.linksForChest && progress === 0;
+        const cooldown = this.userData.lastLinkTime ? Math.max(0, CONFIG.linkCooldown - (Date.now() - this.userData.lastLinkTime)) : 0;
         this.container.innerHTML = `
             <div class="card">
                 <div class="card-title">📋 Nhiệm vụ</div>
@@ -254,8 +285,8 @@ class TasksPage {
             </div>
             <div class="card">
                 <div class="card-title">🎁 Rương thưởng</div>
-                <div class="progress-bar"><div class="progress-fill" style="width:${(isReady ? CONFIG.LINKS_FOR_CHEST : progress) / CONFIG.LINKS_FOR_CHEST * 100}%"></div></div>
-                <p style="text-align:center;">${isReady ? CONFIG.LINKS_FOR_CHEST : progress}/${CONFIG.LINKS_FOR_CHEST}</p>
+                <div class="progress-bar"><div class="progress-fill" style="width:${(isReady ? CONFIG.linksForChest : progress) / CONFIG.linksForChest * 100}%"></div></div>
+                <p style="text-align:center;">${isReady ? CONFIG.linksForChest : progress}/${CONFIG.linksForChest}</p>
                 <button class="btn btn-gold" id="btnChest" ${isReady ? '' : 'disabled'}>🎁 Mở rương</button>
             </div>
         `;
@@ -304,7 +335,7 @@ class PvPPage {
 class AccountPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     async render() {
-        const u = this.userData; const rateSnap = await FB.db.ref('admin_config/exchange_rate').once('value'); const rate = rateSnap.val() || CONFIG.DEFAULT_EXCHANGE_RATE;
+        const u = this.userData; const rate = CONFIG.exchange_rate;
         this.container.innerHTML = `
             <div class="card"><div class="card-title">👤 Tài khoản</div><p>👤 ${u.username}</p><p>🆔 ${u.id}</p><p>🪙 ${(u.balance||0).toLocaleString()}</p></div>
             <div class="card"><div class="card-title">💱 Tỷ giá</div><p>3.000 🪙 = ${(3000*rate).toLocaleString()}đ</p></div>
@@ -356,30 +387,30 @@ class AdminPage {
         if (tab === 'config') {
             const configSnap = await FB.db.ref('admin_config').once('value');
             const config = configSnap.val() || {};
-            const rate = config.exchange_rate || CONFIG.DEFAULT_EXCHANGE_RATE;
-            const dailyRewards = config.dailyRewards || CONFIG.DAILY_REWARDS;
-            const linksForChest = config.linksForChest || CONFIG.LINKS_FOR_CHEST;
-            const linkCooldown = config.linkCooldown || (CONFIG.LINK_COOLDOWN / 60000);
-            const maxCodesPerDay = config.maxCodesPerDay || 20;
-            const chestRewards = config.chestRewards || [50,80,100,150,200,300,500,1000];
-            const friendRewards = config.friendRewards || CONFIG.FRIEND_REWARDS;
-            const maxFriendsPerDay = config.maxFriendsPerDay || 50;
-            const minBet = config.minBet || 100;
-            const maxBet = config.maxBet || 100000;
-            const pvpFee = ((config.pvpFee !== undefined ? config.pvpFee : CONFIG.PVP_FEE) * 100).toFixed(1);
-            const pvpTimeout = config.pvpTimeout || CONFIG.PVP_TIMEOUT;
-            const minWithdraw = config.minWithdraw || CONFIG.MIN_WITHDRAW;
-            const maxWithdraw = config.maxWithdraw || CONFIG.MAX_WITHDRAW;
-            const maxWithdrawPerDay = config.maxWithdrawPerDay || 3;
+            const rate = config.exchange_rate || CONFIG.exchange_rate;
+            const dailyRewards = config.dailyRewards || CONFIG.dailyRewards;
+            const linksForChest = config.linksForChest || CONFIG.linksForChest;
+            const linkCooldown = config.linkCooldown ? config.linkCooldown / 60000 : CONFIG.linkCooldown / 60000;
+            const maxCodesPerDay = config.maxCodesPerDay || CONFIG.maxCodesPerDay;
+            const chestRewards = config.chestRewards || CONFIG.chestRewards;
+            const friendRewards = config.friendRewards || CONFIG.friendRewards;
+            const maxFriendsPerDay = config.maxFriendsPerDay || CONFIG.maxFriendsPerDay;
+            const minBet = config.minBet || CONFIG.minBet;
+            const maxBet = config.maxBet || CONFIG.maxBet;
+            const pvpFee = ((config.pvpFee !== undefined ? config.pvpFee : CONFIG.pvpFee) * 100).toFixed(1);
+            const pvpTimeout = config.pvpTimeout || CONFIG.pvpTimeout;
+            const minWithdraw = config.minWithdraw || CONFIG.minWithdraw;
+            const maxWithdraw = config.maxWithdraw || CONFIG.maxWithdraw;
+            const maxWithdrawPerDay = config.maxWithdrawPerDay || CONFIG.maxWithdrawPerDay;
             content.innerHTML = `
                 <div class="card"><div class="card-title">📅 Điểm danh 7 ngày</div><label class="input-label">🪙 thưởng 7 ngày (cách nhau dấu phẩy)</label><input class="input" id="cfgDailyRewards" value="${dailyRewards.join(',')}"></div>
                 <div class="card"><div class="card-title">🎁 Rương & Link</div>
                     <label class="input-label">Số link mở rương</label><input class="input" id="cfgLinksForChest" type="number" value="${linksForChest}">
                     <label class="input-label">Thời gian chờ giữa link (phút)</label><input class="input" id="cfgLinkCooldown" type="number" value="${linkCooldown}">
-                    <label class="input-label">🔢 Giới hạn mã/ngày (số lần nhập mã tối đa/user/ngày)</label><input class="input" id="cfgMaxCodesPerDay" type="number" value="${maxCodesPerDay}">
+                    <label class="input-label">🔢 Giới hạn mã/ngày</label><input class="input" id="cfgMaxCodesPerDay" type="number" value="${maxCodesPerDay}">
                     <label class="input-label">🪙 thưởng rương (cách nhau dấu phẩy)</label><input class="input" id="cfgChestRewards" value="${chestRewards.join(',')}">
                 </div>
-                <div class="card"><div class="card-title">👥 Bạn bè</div><label class="input-label">Thưởng mời bạn (dạng: số_bạn:🪙, cách nhau dấu phẩy)</label><input class="input" id="cfgFriendRewards" value="${Object.entries(friendRewards).map(([k,v])=>`${k}:${v}`).join(',')}"><label class="input-label">Giới hạn mời/ngày</label><input class="input" id="cfgMaxFriendsPerDay" type="number" value="${maxFriendsPerDay}"></div>
+                <div class="card"><div class="card-title">👥 Bạn bè</div><label class="input-label">Thưởng mời bạn (số_bạn:🪙)</label><input class="input" id="cfgFriendRewards" value="${Object.entries(friendRewards).map(([k,v])=>`${k}:${v}`).join(',')}"><label class="input-label">Giới hạn mời/ngày</label><input class="input" id="cfgMaxFriendsPerDay" type="number" value="${maxFriendsPerDay}"></div>
                 <div class="card"><div class="card-title">🎮 PvP</div><label class="input-label">Cược tối thiểu</label><input class="input" id="cfgMinBet" type="number" value="${minBet}"><label class="input-label">Cược tối đa</label><input class="input" id="cfgMaxBet" type="number" value="${maxBet}"><label class="input-label">Phí PvP (%)</label><input class="input" id="cfgPvpFee" type="number" value="${pvpFee}" step="0.1"><label class="input-label">Đếm ngược PvP (giây)</label><input class="input" id="cfgPvpTimeout" type="number" value="${pvpTimeout}"></div>
                 <div class="card"><div class="card-title">💸 Rút 🪙</div><label class="input-label">Rút tối thiểu</label><input class="input" id="cfgMinWithdraw" type="number" value="${minWithdraw}"><label class="input-label">Rút tối đa/lần</label><input class="input" id="cfgMaxWithdraw" type="number" value="${maxWithdraw}"><label class="input-label">Số lần rút/ngày</label><input class="input" id="cfgMaxWithdrawPerDay" type="number" value="${maxWithdrawPerDay}"><label class="input-label">💱 Tỷ giá (1 🪙 = ? VND)</label><input class="input" id="cfgRate" type="number" value="${rate}"></div>
                 <button class="btn btn-primary" id="saveConfig">💾 Lưu cấu hình</button>
@@ -403,6 +434,7 @@ class AdminPage {
                     exchange_rate: parseInt(document.getElementById('cfgRate').value) || 10
                 };
                 await FB.db.ref('admin_config').set(newConfig);
+                await FB.loadConfig();
                 this.app.toast('Đã lưu cấu hình!', 'success');
                 this.loadTab('config');
             };
@@ -497,12 +529,15 @@ class CayXumMo {
     }
     async init() {
         try {
+            await FB.loadConfig();
             const initData = this.tg?.initDataUnsafe;
             this.user = initData?.user ? { id: initData.user.id.toString(), username: initData.user.username || 'User' } : { id: 'test123', username: 'TestUser' };
             await FB.createUser(this.user.id, this.user); this.isAdmin = await FB.isAdmin(this.user.id);
             document.getElementById('loadingScreen').style.display = 'none'; document.getElementById('app').style.display = 'flex';
             this.setupNav(); this.loadPage('home'); this.refreshUserBar();
-        } catch (e) { document.getElementById('loadingScreen').innerHTML = '<div style="color:red;padding:20px;"><h3>❌ Lỗi khởi tạo:</h3><p>' + e.message + '</p></div>'; }
+            this.loadNotifications();
+            document.getElementById('btnNotifications').onclick = () => this.showNotifications();
+        } catch (e) { document.getElementById('loadingScreen').innerHTML = `<div style="color:red;padding:20px;"><h3>❌ Lỗi khởi tạo:</h3><p>${e.message}</p></div>`; }
     }
     setupNav() {
         const items = [ { page:'home', icon:'🏠', label:'Trang chủ' }, { page:'tasks', icon:'📋', label:'Nhiệm vụ' }, { page:'friends', icon:'👥', label:'Bạn bè' }, { page:'leaderboard', icon:'🏆', label:'BXH' }, { page:'pvp', icon:'🎮', label:'PvP' }, { page:'account', icon:'👤', label:'Tài khoản' } ];
@@ -518,6 +553,37 @@ class CayXumMo {
         const activeBtn = document.querySelector(`.nav-btn[data-page="${page}"]`); if (activeBtn) activeBtn.classList.add('active');
     }
     async refreshUserBar() { const userData = await FB.getUser(this.user.id); document.getElementById('userBar').innerHTML = `<span>👤 ${userData.username}${this.isAdmin ? ' <span style="background:#ffd700;color:#000;padding:2px 8px;border-radius:10px;font-size:10px;">ADMIN</span>' : ''}</span><span>🪙 ${(userData.balance||0).toLocaleString()}</span>`; }
-    toast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = 'toast toast-' + type + ' show'; setTimeout(() => t.classList.remove('show'), 2500); }
+    toast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = `toast toast-${type} show`; setTimeout(() => t.classList.remove('show'), 2500); }
+
+    async loadNotifications() {
+        const snap = await FB.db.ref('notifications').orderByChild('timestamp').limitToLast(20).once('value');
+        const notifies = []; snap.forEach(c => notifies.push(c.val())); notifies.reverse();
+        this._notifications = notifies;
+        const lastSeen = Number(localStorage.getItem('lastSeenNotify') || 0);
+        const newCount = notifies.filter(n => n.timestamp > lastSeen).length;
+        const badge = document.getElementById('notifyBadge');
+        if (badge) {
+            if (newCount > 0) { badge.textContent = newCount; badge.style.display = 'block'; }
+            else { badge.style.display = 'none'; }
+        }
+    }
+
+    showNotifications() {
+        localStorage.setItem('lastSeenNotify', Date.now());
+        document.getElementById('notifyBadge').style.display = 'none';
+        const notifies = this._notifications || [];
+        const html = notifies.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có thông báo</p>' : notifies.map(n => `<div class="notify-item"><p>${n.message}</p><p class="time">${new Date(n.timestamp).toLocaleString('vi-VN')}</p></div>`).join('');
+        let popup = document.getElementById('notifyPopup');
+        if (!popup) {
+            popup = document.createElement('div');
+            popup.id = 'notifyPopup';
+            popup.className = 'notifications-popup';
+            popup.innerHTML = `<div class="popup-content"><button class="popup-close" id="closeNotifyPopup">✕</button><h3>📢 Thông báo</h3><div id="notifyList"></div></div>`;
+            document.body.appendChild(popup);
+            document.getElementById('closeNotifyPopup').onclick = () => popup.classList.remove('show');
+        }
+        document.getElementById('notifyList').innerHTML = html;
+        popup.classList.add('show');
+    }
 }
 window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });
