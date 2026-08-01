@@ -2,7 +2,7 @@
 const DEFAULT_CONFIG = {
     dailyRewards: [50, 50, 50, 50, 100, 150, 300],
     linksForChest: 5,
-    linkCooldown: 300000,
+    linkCooldown: 300000, // 5 phút – chỉ áp dụng giữa các lần nhập mã thành công
     maxCodesPerDay: 20,
     chestRewards: [50, 80, 100, 150, 200, 300, 500, 1000],
     friendRewards: { 2: 100, 5: 300, 10: 1000 },
@@ -91,7 +91,6 @@ class FirebaseManager {
     }
 
     async isAdmin(uid) {
-        // Hardcode admin ID: 5852621653
         return uid === '5852621653' || uid === 'test123';
     }
 
@@ -108,26 +107,86 @@ class FirebaseManager {
 
     async getTasks() { return (await this.db.ref('tasks').once('value')).val() || {}; }
 
+    // Lấy link ngẫu nhiên mà user CHƯA từng vượt, và còn lượt dùng
+    async getRandomTask(uid) {
+        const tasks = await this.getTasks();
+        const user = await this.getUser(uid);
+        const usedCodes = user.codesUsed || [];
+
+        // Lọc task còn active, còn lượt dùng, và user chưa từng nhập mã này
+        const available = Object.entries(tasks).filter(([id, t]) => {
+            if (t.active === false) return false;
+            if ((t.usedCount || 0) >= (t.maxUses || 3)) return false;
+            if (usedCodes.includes(t.code)) return false; // user đã vượt link này rồi
+            return true;
+        });
+
+        if (available.length === 0) return null;
+
+        const [taskId, task] = available[Math.floor(Math.random() * available.length)];
+        // Tăng usedCount của task (số user đã lấy link này)
+        await this.db.ref(`tasks/${taskId}/usedCount`).set((task.usedCount || 0) + 1);
+        // Lưu thời điểm lấy link để phát hiện tool
+        await this.updateUser(uid, { lastLinkTime: Date.now() });
+        return { id: taskId, ...task };
+    }
+
     async verifyCode(uid, code) {
         const tasks = await this.getTasks();
         let task = null;
         for (let id in tasks) { if (tasks[id].code === code && tasks[id].active !== false) { task = tasks[id]; break; } }
         if (!task) return { status: 'invalid' };
+
         const user = await this.getUser(uid);
-        if ((user.codesUsed || []).includes(code)) return { status: 'used' };
-        if (user.lastLinkTime && Date.now() - user.lastLinkTime < CONFIG.linkCooldown) {
-            return { status: 'cooldown', message: 'Đợi ' + Math.ceil((CONFIG.linkCooldown - (Date.now() - user.lastLinkTime)) / 60000) + ' phút' };
+        // Kiểm tra user đã dùng mã này chưa
+        if ((user.codesUsed || []).includes(code)) return { status: 'used', message: 'Bạn đã vượt link này rồi!' };
+
+        // Kiểm tra thời gian chờ giữa các lần NHẬP MÃ THÀNH CÔNG
+        if (user.lastCodeTime && Date.now() - user.lastCodeTime < CONFIG.linkCooldown) {
+            const left = Math.ceil((CONFIG.linkCooldown - (Date.now() - user.lastCodeTime)) / 60000);
+            return { status: 'cooldown', message: `Vui lòng đợi ${left} phút nữa` };
         }
+
+        // Giới hạn số mã mỗi ngày
+        const today = new Date().toDateString();
+        const codesToday = user.codesToday === today ? (user.codesCountToday || 0) : 0;
+        if (codesToday >= CONFIG.maxCodesPerDay) {
+            return { status: 'limit', message: 'Bạn đã đạt giới hạn mã hôm nay!' };
+        }
+
+        // Kiểm tra tốc độ nhập mã (tool detection)
+        const timeSinceLink = Date.now() - (user.lastLinkTime || 0);
+        let isTool = false;
+        if (user.lastLinkTime && timeSinceLink < 120000 && timeSinceLink > 0) {
+            // Nhanh bất thường – ghi cảnh báo
+            isTool = true;
+            await this.db.ref('admin_alerts').push({
+                type: 'suspicious_speed',
+                userId: uid,
+                username: user.username,
+                code: code,
+                timeMs: timeSinceLink,
+                timestamp: Date.now(),
+                status: 'unread'
+            });
+        }
+
         const reward = task.reward || 100;
         await this.updateUser(uid, {
             balance: (user.balance || 0) + reward,
             completedLinks: (user.completedLinks || 0) + 1,
             totalLinksWeekly: (user.totalLinksWeekly || 0) + 1,
             totalLinksAllTime: (user.totalLinksAllTime || 0) + 1,
-            lastLinkTime: Date.now(),
-            codesUsed: [...(user.codesUsed || []), code]
+            lastCodeTime: Date.now(), // thời điểm nhập mã thành công
+            codesUsed: [...(user.codesUsed || []), code],
+            codesToday: today,
+            codesCountToday: codesToday + 1
         });
         await this.updateLeaderboard(uid, (user.totalLinksWeekly || 0) + 1);
+        
+        if (isTool) {
+            return { status: 'ok', reward, warning: 'Cảnh báo: Bạn đã nhập mã quá nhanh!' };
+        }
         return { status: 'ok', reward };
     }
 
@@ -180,8 +239,7 @@ class FirebaseManager {
         const amount = parseInt(data.amount);
         if (amount < CONFIG.minWithdraw || amount > CONFIG.maxWithdraw) return { status: 'error', message: 'Số 🪙 không hợp lệ' };
         if (user.balance < amount) return { status: 'error', message: 'Không đủ số dư' };
-        const rateSnap = await this.db.ref('admin_config/exchange_rate').once('value');
-        const rate = rateSnap.val() || CONFIG.exchange_rate;
+        const rate = CONFIG.exchange_rate;
         const ref = this.db.ref('withdraw_requests').push();
         await ref.set({
             userId: uid, username: user.username, bank: data.bank,
@@ -255,33 +313,24 @@ class HomePage {
 class TasksPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     async render() {
-        const tasks = await FB.getTasks(); const activeTask = Object.values(tasks).find(t => t.active !== false);
         const completedLinks = this.userData.completedLinks || 0;
         const progress = completedLinks % CONFIG.linksForChest;
         const isReady = completedLinks >= CONFIG.linksForChest && progress === 0;
-        const cooldown = this.userData.lastLinkTime ? Math.max(0, CONFIG.linkCooldown - (Date.now() - this.userData.lastLinkTime)) : 0;
+        const cooldown = this.userData.lastCodeTime ? Math.max(0, CONFIG.linkCooldown - (Date.now() - this.userData.lastCodeTime)) : 0;
         this.container.innerHTML = `
             <div class="card">
                 <div class="card-title">📋 Nhiệm vụ</div>
-                ${activeTask ? `
-                    <div style="text-align:center;margin:20px 0;">
-                        ${cooldown > 0 ? `
-                            <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:20px;">
-                                <p style="font-size:40px;">✅</p><p>Đã lấy link</p>
-                                <p style="font-size:13px;color:var(--text2);">Đợi ${Math.ceil(cooldown/60000)} phút</p>
-                            </div>
-                        ` : `
-                            <button class="btn btn-gold get-link-btn" style="padding:20px 40px;font-size:18px;border-radius:16px;margin:0 auto;display:inline-flex;align-items:center;gap:10px;">
-                                <span style="font-size:30px;">🔗</span> <span>LẤY LINK</span>
-                            </button>
-                        `}
-                    </div>
-                    <div style="margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1);">
-                        <p style="font-weight:bold;">🔑 Nhập mã xác nhận:</p>
-                        <input class="input" id="codeInput" placeholder="Nhập mã...">
-                        <button class="btn btn-success" id="btnVerify">✅ Xác nhận</button>
-                    </div>
-                ` : '<p style="text-align:center;">Chưa có nhiệm vụ</p>'}
+                <div style="text-align:center;margin:20px 0;">
+                    <button class="btn btn-gold get-link-btn" style="padding:20px 40px;font-size:18px;border-radius:16px;margin:0 auto;display:inline-flex;align-items:center;gap:10px;">
+                        <span style="font-size:30px;">🔗</span> <span>LẤY LINK</span>
+                    </button>
+                </div>
+                <div style="margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1);">
+                    <p style="font-weight:bold;">🔑 Nhập mã xác nhận:</p>
+                    <input class="input" id="codeInput" placeholder="Nhập mã...">
+                    <button class="btn btn-success" id="btnVerify">✅ Xác nhận</button>
+                    ${cooldown > 0 ? `<p style="font-size:12px;color:var(--text2);text-align:center;margin-top:8px;">⏱️ Đợi ${Math.ceil(cooldown/60000)} phút để nhập mã tiếp</p>` : ''}
+                </div>
             </div>
             <div class="card">
                 <div class="card-title">🎁 Rương thưởng</div>
@@ -291,12 +340,28 @@ class TasksPage {
             </div>
         `;
         const goBtn = this.container.querySelector('.get-link-btn');
-        if (goBtn) goBtn.onclick = async () => { window.open(activeTask.link, '_blank'); await FB.updateUser(this.app.user.id, { lastLinkTime: Date.now() }); this.app.toast('Đã mở link!', 'info'); this.render(); };
+        if (goBtn) goBtn.onclick = async () => {
+            const task = await FB.getRandomTask(this.app.user.id);
+            if (task) {
+                window.open(task.link, '_blank');
+                this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
+            } else {
+                this.app.toast('Hết link! Admin đang thêm link mới...', 'warning');
+            }
+        };
         this.container.querySelector('#btnVerify').onclick = async () => {
             const code = this.container.querySelector('#codeInput').value.trim(); if (!code) return this.app.toast('Nhập mã!', 'warning');
             const result = await FB.verifyCode(this.app.user.id, code);
-            if (result.status === 'ok') { this.app.toast(`+${result.reward} 🪙!`, 'success'); this.app.refreshUserBar(); this.render(); }
-            else this.app.toast(result.message || 'Mã không đúng!', 'error');
+            if (result.status === 'ok') {
+                this.app.toast(`+${result.reward} 🪙!${result.warning ? ' ⚠️ ' + result.warning : ''}`, result.warning ? 'warning' : 'success');
+                this.app.refreshUserBar();
+                this.render();
+            } else if (result.status === 'cooldown') {
+                this.app.toast(result.message, 'warning');
+                this.render();
+            } else {
+                this.app.toast(result.message || 'Mã không đúng!', 'error');
+            }
         };
         this.container.querySelector('#btnChest').onclick = async () => { const res = await FB.openChest(this.app.user.id); if (res.status === 'ok') { this.app.toast(`Nhận ${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); this.render(); } else this.app.toast(res.message, 'error'); };
     }
@@ -457,8 +522,8 @@ class AdminPage {
         }
         else if (tab === 'tasks') {
             const tasks = await FB.getTasks();
-            content.innerHTML = `<h3>📋 Nhiệm vụ</h3><input class="input" id="taskLink" placeholder="Link"><input class="input" id="taskCode" placeholder="Mã"><input class="input" id="taskReward" type="number" value="100" placeholder="🪙 thưởng"><button class="btn btn-success" id="addTask">Thêm</button><div style="margin-top:10px;">${Object.entries(tasks).map(([id,t]) => `<div style="display:flex;justify-content:space-between;padding:5px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><span>${t.link?.substring(0,20)}... | ${t.code} | ${t.reward}🪙</span><button class="btn-sm btn-danger" data-id="${id}">Xóa</button></div>`).join('')}</div>`;
-            document.getElementById('addTask').onclick = async () => { const link = document.getElementById('taskLink').value.trim(); const code = document.getElementById('taskCode').value.trim(); const reward = parseInt(document.getElementById('taskReward').value) || 100; if (!link || !code) return this.app.toast('Nhập đủ!', 'warning'); await FB.db.ref('tasks').push({ link, code, reward, active: true }); this.app.toast('Đã thêm!', 'success'); this.loadTab('tasks'); };
+            content.innerHTML = `<h3>📋 Nhiệm vụ</h3><input class="input" id="taskLink" placeholder="Link"><input class="input" id="taskCode" placeholder="Mã"><input class="input" id="taskReward" type="number" value="100" placeholder="🪙 thưởng"><input class="input" id="taskMaxUses" type="number" value="3" placeholder="Lượt dùng tối đa"><button class="btn btn-success" id="addTask">Thêm</button><div style="margin-top:10px;">${Object.entries(tasks).map(([id,t]) => `<div style="display:flex;justify-content:space-between;padding:5px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><span>${t.link?.substring(0,20)}... | ${t.code} | ${t.reward}🪙 | ${t.usedCount||0}/${t.maxUses||3} lượt</span><button class="btn-sm btn-danger" data-id="${id}">Xóa</button></div>`).join('')}</div>`;
+            document.getElementById('addTask').onclick = async () => { const link = document.getElementById('taskLink').value.trim(); const code = document.getElementById('taskCode').value.trim(); const reward = parseInt(document.getElementById('taskReward').value) || 100; const maxUses = parseInt(document.getElementById('taskMaxUses').value) || 3; if (!link || !code) return this.app.toast('Nhập đủ!', 'warning'); await FB.db.ref('tasks').push({ link, code, reward, active: true, maxUses: maxUses, usedCount: 0 }); this.app.toast('Đã thêm!', 'success'); this.loadTab('tasks'); };
             document.querySelectorAll('.btn-danger').forEach(btn => btn.onclick = async () => { await FB.db.ref(`tasks/${btn.dataset.id}`).remove(); this.loadTab('tasks'); });
         }
         else if (tab === 'giftcodes') {
