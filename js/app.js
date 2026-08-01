@@ -276,7 +276,7 @@ class AccountPage {
         const u = this.userData; const rateSnap = await FB.db.ref('admin_config/exchange_rate').once('value'); const rate = rateSnap.val() || CONFIG.DEFAULT_EXCHANGE_RATE;
         this.container.innerHTML = `
             <div class="card"><div class="card-title">👤 Tài khoản</div><p>👤 ${u.username}</p><p>🆔 ${u.id}</p><p>🪙 ${(u.balance||0).toLocaleString()}</p></div>
-            <div class="card"><div class="card-title">💱 Tỷ giá</div><p>1.000 🪙 = ${(1000*rate).toLocaleString()}đ</p></div>
+            <div class="card"><div class="card-title">💱 Tỷ giá</div><p>3.000 🪙 = ${(1000*rate).toLocaleString()}đ</p></div>
             <div class="card"><div class="card-title">🎁 Gift Code</div><input class="input" id="giftInput" placeholder="Nhập Gift Code"><button class="btn btn-gold" id="btnGift">Nhận</button></div>
             <div class="card"><div class="card-title">💸 Rút 🪙</div><input class="input" id="wdBank" placeholder="Ngân hàng"><input class="input" id="wdName" placeholder="Tên chủ TK"><input class="input" id="wdAccount" placeholder="Số TK"><input class="input" id="wdAmount" type="number" placeholder="Số 🪙 (20k-100k)"><button class="btn btn-warning" id="btnWithdraw">Gửi yêu cầu</button></div>
             <div class="card"><div class="card-title">📜 Lịch sử rút</div><div id="wdHistory">Đang tải...</div></div>
