@@ -106,7 +106,6 @@ class FirebaseManager {
         if (!isReady) return { status: 'error', message: 'Chưa đủ link!' };
         const rewards = [50, 80, 100, 150, 200, 300, 500, 1000];
         const reward = rewards[Math.floor(Math.random() * rewards.length)];
-        // Trừ đi 5 link đã dùng để mở rương
         await this.updateUser(uid, {
             balance: (user.balance || 0) + reward,
             chestsOpened: (user.chestsOpened || 0) + 1,
@@ -386,7 +385,6 @@ class AdminPage {
                 <button class="btn btn-primary" id="saveConfig">💾 Lưu cấu hình</button>
             `;
             document.getElementById('saveConfig').onclick = async () => {
-                const newRate = parseInt(document.getElementById('cfgRate').value) || CONFIG.DEFAULT_EXCHANGE_RATE;
                 const newConfig = {
                     dailyRewards: document.getElementById('cfgDailyRewards').value.split(',').map(Number),
                     linksForChest: parseInt(document.getElementById('cfgLinksForChest').value) || 5,
@@ -402,7 +400,7 @@ class AdminPage {
                     minWithdraw: parseInt(document.getElementById('cfgMinWithdraw').value) || 20000,
                     maxWithdraw: parseInt(document.getElementById('cfgMaxWithdraw').value) || 100000,
                     maxWithdrawPerDay: parseInt(document.getElementById('cfgMaxWithdrawPerDay').value) || 3,
-                    exchange_rate: newRate
+                    exchange_rate: parseInt(document.getElementById('cfgRate').value) || 10
                 };
                 await FB.db.ref('admin_config').set(newConfig);
                 this.app.toast('Đã lưu cấu hình!', 'success');
