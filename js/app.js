@@ -257,9 +257,17 @@ class FirebaseManager {
     }
 
     async getWithdrawHistory(uid) {
-        const snap = await this.db.ref('withdraw_requests').orderByChild('userId').equalTo(uid).once('value');
-        const arr = []; snap.forEach(c => arr.push({ id: c.key, ...c.val() })); return arr.reverse();
+    const snap = await this.db.ref('withdraw_requests').once('value');
+    const all = snap.val() || {};
+    const arr = [];
+    for (let key in all) {
+        if (all[key].userId === uid) {
+            arr.push({ id: key, ...all[key] });
+        }
     }
+    arr.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return arr;
+}
 
     async updateLeaderboard(uid, links) {
         const user = await this.getUser(uid);
@@ -567,30 +575,34 @@ class AccountPage {
         this.loadHistory();
     }
     async loadHistory() {
-        const history = await FB.getWithdrawHistory(this.app.user.id);
-        const container = this.container.querySelector('#wdHistory');
-        if (!container) return;
-        if (history.length === 0) {
-            container.innerHTML = '<p style="color:var(--text2);">Chưa có lịch sử rút</p>';
-            return;
-        }
-        const html = history.map(h => {
-            const date = h.createdAt ? new Date(h.createdAt).toLocaleString('vi-VN') : 'N/A';
-            let statusText = '🟡 Chờ';
-            let statusClass = 'badge-pending';
-            if (h.status === 'approved') { statusText = '🟢 Thành công'; statusClass = 'badge-success'; }
-            else if (h.status === 'rejected') { statusText = '🔴 Từ chối'; statusClass = 'badge-rejected'; }
-            return `
-                <div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05);">
-                    <p>💰 ${h.amountXu.toLocaleString()} 🪙 = ${h.amountVnd.toLocaleString()}đ</p>
-                    <p>🏦 ${h.bank} - ${h.accountNumber}</p>
-                    <span class="badge ${statusClass}">${statusText}</span>
-                    <p style="font-size:10px;color:var(--text2);">${date}</p>
-                </div>
-            `;
-        }).join('');
-        container.innerHTML = html;
+    const history = await FB.getWithdrawHistory(this.app.user.id);
+    const container = this.container.querySelector('#wdHistory');
+    if (!container) return;
+    if (history.length === 0) {
+        container.innerHTML = '<p style="color:var(--text2);">Chưa có lịch sử rút</p>';
+        return;
     }
+    const html = history.map(h => {
+        let dateStr = 'N/A';
+        if (h.createdAt) {
+            const ts = typeof h.createdAt === 'object' ? Date.now() : h.createdAt;
+            dateStr = new Date(ts).toLocaleString('vi-VN');
+        }
+        let statusText = '🟡 Chờ';
+        let statusClass = 'badge-pending';
+        if (h.status === 'approved') { statusText = '🟢 Thành công'; statusClass = 'badge-success'; }
+        else if (h.status === 'rejected') { statusText = '🔴 Từ chối'; statusClass = 'badge-rejected'; }
+        return `
+            <div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05);">
+                <p>💰 ${h.amountXu.toLocaleString()} 🪙 = ${h.amountVnd.toLocaleString()}đ</p>
+                <p>🏦 ${h.bank} - ${h.accountNumber}</p>
+                <span class="badge ${statusClass}">${statusText}</span>
+                <p style="font-size:10px;color:var(--text2);">${dateStr}</p>
+            </div>
+        `;
+    }).join('');
+    container.innerHTML = html;
+}
 }
 
 class AdminPage {
