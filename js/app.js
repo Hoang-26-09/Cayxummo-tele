@@ -667,23 +667,31 @@ class AdminPage {
             document.querySelectorAll('.btn-danger').forEach(btn => btn.onclick = async () => { await FB.db.ref(`gift_codes/${btn.dataset.code}`).remove(); this.loadTab('giftcodes'); });
         }
         else if (tab === 'withdraws') {
-            const wSnap = await FB.db.ref('withdraw_requests').orderByChild('createdAt').limitToLast(50).once('value');
-            const withdraws = []; wSnap.forEach(c => withdraws.push({ id: c.key, ...c.val() })); withdraws.reverse();
-            content.innerHTML = `<h3>💸 Rút 🪙</h3>
-                <div style="display:flex;gap:8px;margin-bottom:12px;">
-                    <button class="btn btn-sm btn-primary filter-withdraw active" data-filter="all">Tất cả</button>
-                    <button class="btn btn-sm btn-warning filter-withdraw" data-filter="pending">🟡 Chờ duyệt</button>
-                    <button class="btn btn-sm btn-success filter-withdraw" data-filter="approved">🟢 Đã duyệt</button>
-                    <button class="btn btn-sm btn-danger filter-withdraw" data-filter="rejected">🔴 Từ chối</button>
-                </div>
-                <div id="withdrawList">
-                    ${withdraws.map(w => `<div class="withdraw-item" data-status="${w.status}" style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;">
-                        <p>${w.username} - ${w.amountXu.toLocaleString()} 🪙 (${w.amountVnd.toLocaleString()}đ)</p>
-                        <p>${w.bank} - ${w.accountNumber}</p>
-                        <span class="badge badge-${w.status==='pending'?'pending':w.status==='approved'?'success':'rejected'}">${w.status==='pending'?'🟡 Chờ':w.status==='approved'?'🟢 Thành công':'🔴 Từ chối'}</span>
-                        ${w.status==='pending' ? `<button class="btn-sm btn-success approve" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Duyệt</button><button class="btn-sm btn-danger reject" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Từ chối</button>` : ''}
-                    </div>`).join('') || '<p style="text-align:center;color:var(--text2);">Chưa có yêu cầu rút nào</p>'}
-                </div>`;
+    const wSnap = await FB.db.ref('withdraw_requests').once('value');
+    const withdraws = [];
+    wSnap.forEach(c => {
+        withdraws.push({ id: c.key, ...c.val() });
+    });
+    // Sắp xếp giảm dần theo createdAt (nếu có)
+    withdraws.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    console.log('Withdraws data:', withdraws); // Debug
+    content.innerHTML = `<h3>💸 Rút 🪙 (Tất cả: ${withdraws.length})</h3>
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+            <button class="btn btn-sm btn-primary filter-withdraw active" data-filter="all">Tất cả</button>
+            <button class="btn btn-sm btn-warning filter-withdraw" data-filter="pending">🟡 Chờ duyệt</button>
+            <button class="btn btn-sm btn-success filter-withdraw" data-filter="approved">🟢 Đã duyệt</button>
+            <button class="btn btn-sm btn-danger filter-withdraw" data-filter="rejected">🔴 Từ chối</button>
+        </div>
+        <div id="withdrawList">
+            ${withdraws.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có yêu cầu rút nào</p>' :
+            withdraws.map(w => `<div class="withdraw-item" data-status="${w.status}" style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;">
+                <p>${w.username} - ${(w.amountXu || 0).toLocaleString()} 🪙 (${(w.amountVnd || 0).toLocaleString()}đ)</p>
+                <p>${w.bank} - ${w.accountNumber}</p>
+                <span class="badge badge-${w.status==='pending'?'pending':w.status==='approved'?'success':'rejected'}">${w.status==='pending'?'🟡 Chờ':w.status==='approved'?'🟢 Thành công':'🔴 Từ chối'}</span>
+                ${w.status==='pending' ? `<button class="btn-sm btn-success approve" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Duyệt</button><button class="btn-sm btn-danger reject" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Từ chối</button>` : ''}
+                <br><small>${new Date(w.createdAt).toLocaleString('vi-VN')}</small>
+            </div>`).join('')}
+        </div>`;
             document.querySelectorAll('.filter-withdraw').forEach(btn => {
                 btn.onclick = () => {
                     document.querySelectorAll('.filter-withdraw').forEach(b => b.classList.remove('active'));
