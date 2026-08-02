@@ -113,20 +113,17 @@ class FirebaseManager {
         const user = await this.getUser(uid);
         const usedCodes = user.codesUsed || [];
 
-        // Lọc task còn active, còn lượt dùng, và user chưa từng nhập mã này
         const available = Object.entries(tasks).filter(([id, t]) => {
             if (t.active === false) return false;
             if ((t.usedCount || 0) >= (t.maxUses || 3)) return false;
-            if (usedCodes.includes(t.code)) return false; // user đã vượt link này rồi
+            if (usedCodes.includes(t.code)) return false;
             return true;
         });
 
         if (available.length === 0) return null;
 
         const [taskId, task] = available[Math.floor(Math.random() * available.length)];
-        // Tăng usedCount của task (số user đã lấy link này)
         await this.db.ref(`tasks/${taskId}/usedCount`).set((task.usedCount || 0) + 1);
-        // Lưu thời điểm lấy link để phát hiện tool
         await this.updateUser(uid, { lastLinkTime: Date.now() });
         return { id: taskId, ...task };
     }
@@ -138,27 +135,22 @@ class FirebaseManager {
         if (!task) return { status: 'invalid' };
 
         const user = await this.getUser(uid);
-        // Kiểm tra user đã dùng mã này chưa
         if ((user.codesUsed || []).includes(code)) return { status: 'used', message: 'Bạn đã vượt link này rồi!' };
 
-        // Kiểm tra thời gian chờ giữa các lần NHẬP MÃ THÀNH CÔNG
         if (user.lastCodeTime && Date.now() - user.lastCodeTime < CONFIG.linkCooldown) {
             const left = Math.ceil((CONFIG.linkCooldown - (Date.now() - user.lastCodeTime)) / 60000);
             return { status: 'cooldown', message: `Vui lòng đợi ${left} phút nữa` };
         }
 
-        // Giới hạn số mã mỗi ngày
         const today = new Date().toDateString();
         const codesToday = user.codesToday === today ? (user.codesCountToday || 0) : 0;
         if (codesToday >= CONFIG.maxCodesPerDay) {
             return { status: 'limit', message: 'Bạn đã đạt giới hạn mã hôm nay!' };
         }
 
-        // Kiểm tra tốc độ nhập mã (tool detection)
         const timeSinceLink = Date.now() - (user.lastLinkTime || 0);
         let isTool = false;
         if (user.lastLinkTime && timeSinceLink < 120000 && timeSinceLink > 0) {
-            // Nhanh bất thường – ghi cảnh báo
             isTool = true;
             await this.db.ref('admin_alerts').push({
                 type: 'suspicious_speed',
@@ -177,7 +169,7 @@ class FirebaseManager {
             completedLinks: (user.completedLinks || 0) + 1,
             totalLinksWeekly: (user.totalLinksWeekly || 0) + 1,
             totalLinksAllTime: (user.totalLinksAllTime || 0) + 1,
-            lastCodeTime: Date.now(), // thời điểm nhập mã thành công
+            lastCodeTime: Date.now(),
             codesUsed: [...(user.codesUsed || []), code],
             codesToday: today,
             codesCountToday: codesToday + 1
@@ -282,6 +274,88 @@ class FirebaseManager {
         wSnap.forEach(() => pending++);
         return { totalUsers, totalBalance, totalLinks, prizeFund: fund, pendingWithdraws: pending };
     }
+
+    // Lấy thời gian còn lại đến 8h Chủ nhật tới
+    getTimeUntilSunday8AM() {
+        const now = new Date();
+        const dayOfWeek = now.getDay(); // 0 = Chủ nhật
+        let daysUntilSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek;
+        
+        const nextSunday = new Date(now);
+        nextSunday.setDate(now.getDate() + daysUntilSunday);
+        nextSunday.setHours(8, 0, 0, 0);
+        
+        // Nếu hôm nay là Chủ nhật và đã qua 8h, lấy Chủ nhật tuần sau
+        if (dayOfWeek === 0 && now >= nextSunday) {
+            nextSunday.setDate(nextSunday.getDate() + 7);
+        }
+        
+        return nextSunday.getTime() - now.getTime();
+    }
+
+    // Tự động phát thưởng BXH (gọi mỗi khi load BXH, hoặc dùng Cloud Functions)
+    async checkAndDistributeRewards() {
+        const timeUntil = this.getTimeUntilSunday8AM();
+        // Nếu còn hơn 1 phút thì không làm gì
+        if (timeUntil > 60000) return;
+        
+        // Kiểm tra xem tuần này đã phát thưởng chưa
+        const lastResetSnap = await this.db.ref('leaderboard_config/lastReset').once('value');
+        const lastReset = lastResetSnap.val() || '';
+        const thisWeek = this.getWeekNumber();
+        
+        if (lastReset === thisWeek) return; // Đã phát thưởng tuần này rồi
+        
+        // Lấy top 10
+        const top10 = await this.getTopLinks(10);
+        if (top10.length === 0) return;
+        
+        // Lấy quỹ
+        const fundSnap = await this.db.ref('prize_fund').once('value');
+        let fund = fundSnap.val() || 0;
+        if (fund <= 0) return;
+        
+        // Tỉ lệ chia thưởng: 40%, 25%, 15%, 10%, 5%, 3%, 2%, 0%, 0%, 0%
+        const ratios = [0.40, 0.25, 0.15, 0.10, 0.05, 0.03, 0.02, 0, 0, 0];
+        
+        // Phát thưởng
+        const updates = {};
+        let totalDistributed = 0;
+        top10.forEach((user, i) => {
+            if (i < ratios.length && ratios[i] > 0) {
+                const reward = Math.floor(fund * ratios[i]);
+                if (reward > 0) {
+                    updates[`users/${user.userId}/balance`] = firebase.database.ServerValue.increment(reward);
+                    totalDistributed += reward;
+                }
+            }
+        });
+        
+        if (totalDistributed > 0) {
+            await this.db.ref().update(updates);
+            // Trừ quỹ
+            await this.db.ref('prize_fund').set(Math.max(0, fund - totalDistributed));
+            // Đánh dấu đã phát thưởng tuần này
+            await this.db.ref('leaderboard_config/lastReset').set(thisWeek);
+            // Reset leaderboard
+            await this.db.ref('leaderboard').remove();
+            // Reset totalLinksWeekly cho tất cả users
+            const usersSnap = await this.db.ref('users').once('value');
+            const userUpdates = {};
+            usersSnap.forEach(child => {
+                userUpdates[`${child.key}/totalLinksWeekly`] = 0;
+            });
+            await this.db.ref().update(userUpdates);
+            console.log(`Đã phát thưởng BXH: ${totalDistributed} 🪙`);
+        }
+    }
+
+    getWeekNumber() {
+        const now = new Date();
+        const start = new Date(now.getFullYear(), 0, 1);
+        const diff = now - start;
+        return Math.ceil((diff / 86400000 + start.getDay() + 1) / 7);
+    }
 }
 const FB = new FirebaseManager();
 
@@ -316,20 +390,22 @@ class TasksPage {
         const completedLinks = this.userData.completedLinks || 0;
         const progress = completedLinks % CONFIG.linksForChest;
         const isReady = completedLinks >= CONFIG.linksForChest && progress === 0;
+        // 🔥 Đồng bộ cooldown: dùng lastCodeTime (thời điểm nhập mã thành công)
         const cooldown = this.userData.lastCodeTime ? Math.max(0, CONFIG.linkCooldown - (Date.now() - this.userData.lastCodeTime)) : 0;
+        const isCooldown = cooldown > 0;
         this.container.innerHTML = `
             <div class="card">
                 <div class="card-title">📋 Nhiệm vụ</div>
                 <div style="text-align:center;margin:20px 0;">
-                    <button class="btn btn-gold get-link-btn" style="padding:20px 40px;font-size:18px;border-radius:16px;margin:0 auto;display:inline-flex;align-items:center;gap:10px;">
-                        <span style="font-size:30px;">🔗</span> <span>LẤY LINK</span>
+                    <button class="btn btn-gold get-link-btn" style="padding:20px 40px;font-size:18px;border-radius:16px;margin:0 auto;display:inline-flex;align-items:center;gap:10px;" ${isCooldown ? 'disabled' : ''}>
+                        <span style="font-size:30px;">🔗</span> <span>${isCooldown ? `⏳ Đợi ${Math.ceil(cooldown/60000)}p` : 'LẤY LINK'}</span>
                     </button>
                 </div>
                 <div style="margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1);">
                     <p style="font-weight:bold;">🔑 Nhập mã xác nhận:</p>
                     <input class="input" id="codeInput" placeholder="Nhập mã...">
                     <button class="btn btn-success" id="btnVerify">✅ Xác nhận</button>
-                    ${cooldown > 0 ? `<p style="font-size:12px;color:var(--text2);text-align:center;margin-top:8px;">⏱️ Đợi ${Math.ceil(cooldown/60000)} phút để nhập mã tiếp</p>` : ''}
+                    ${isCooldown ? `<p style="font-size:12px;color:var(--text2);text-align:center;margin-top:8px;">⏱️ Đợi ${Math.ceil(cooldown/60000)} phút để làm nhiệm vụ tiếp</p>` : ''}
                 </div>
             </div>
             <div class="card">
@@ -340,15 +416,17 @@ class TasksPage {
             </div>
         `;
         const goBtn = this.container.querySelector('.get-link-btn');
-        if (goBtn) goBtn.onclick = async () => {
-            const task = await FB.getRandomTask(this.app.user.id);
-            if (task) {
-                window.open(task.link, '_blank');
-                this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
-            } else {
-                this.app.toast('Hết link! Admin đang thêm link mới...', 'warning');
-            }
-        };
+        if (goBtn && !isCooldown) {
+            goBtn.onclick = async () => {
+                const task = await FB.getRandomTask(this.app.user.id);
+                if (task) {
+                    window.open(task.link, '_blank');
+                    this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
+                } else {
+                    this.app.toast('Hết link! Admin đang thêm link mới...', 'warning');
+                }
+            };
+        }
         this.container.querySelector('#btnVerify').onclick = async () => {
             const code = this.container.querySelector('#codeInput').value.trim(); if (!code) return this.app.toast('Nhập mã!', 'warning');
             const result = await FB.verifyCode(this.app.user.id, code);
@@ -384,7 +462,62 @@ class FriendsPage {
 
 class LeaderboardPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
-    async render() { this.container.innerHTML = `<div class="card"><div class="card-title">🏆 Top vượt link</div><p style="font-size:12px;color:var(--text2);">Reset mỗi 7 ngày</p><div id="topLinks">Đang tải...</div></div>`; const top = await FB.getTopLinks(10); const html = top.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username||'Unknown'}</span><span style="margin-left:auto;">🔗 ${u.links||0}</span></div>`).join(''); this.container.querySelector('#topLinks').innerHTML = html || '<p>Chưa có dữ liệu</p>'; }
+    async render() {
+        // Kiểm tra và phát thưởng nếu đến giờ
+        await FB.checkAndDistributeRewards();
+        
+        const top = await FB.getTopLinks(10);
+        const fundSnap = await FB.db.ref('prize_fund').once('value');
+        const fund = fundSnap.val() || 0;
+        const timeUntil = FB.getTimeUntilSunday8AM();
+        
+        // Format thời gian đếm ngược
+        const days = Math.floor(timeUntil / 86400000);
+        const hours = Math.floor((timeUntil % 86400000) / 3600000);
+        const minutes = Math.floor((timeUntil % 3600000) / 60000);
+        const seconds = Math.floor((timeUntil % 60000) / 1000);
+        const countdownStr = `${days}ngày ${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+        
+        this.container.innerHTML = `
+            <div class="card">
+                <div class="card-title">💰 Quỹ thưởng BXH</div>
+                <p style="text-align:center;font-size:28px;font-weight:bold;color:var(--gold);">${fund.toLocaleString()} 🪙</p>
+                <p style="text-align:center;font-size:12px;color:var(--text2);">Phát thưởng vào 8h Chủ nhật cho Top 10</p>
+            </div>
+            <div class="card">
+                <div class="card-title">🏆 Top vượt link</div>
+                <p style="font-size:12px;color:var(--text2);">Reset mỗi Chủ nhật 8h sáng</p>
+                <p style="text-align:center;font-size:18px;font-weight:bold;color:var(--accent);margin:8px 0;">⏰ Còn: ${countdownStr}</p>
+                <div id="topLinks">
+                    ${top.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có dữ liệu</p>' : 
+                    top.map((u,i) => `<div class="leaderboard-item">
+                        <span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span>
+                        <span>${u.username||'Unknown'}</span>
+                        <span style="margin-left:auto;">🔗 ${u.links||0}</span>
+                        ${i < 7 ? `<span style="font-size:11px;color:var(--gold);margin-left:4px;">(${['40%','25%','15%','10%','5%','3%','2%'][i]})</span>` : ''}
+                    </div>`).join('')}
+                </div>
+            </div>
+        `;
+        
+        // Cập nhật đồng hồ đếm ngược mỗi giây
+        this.countdownInterval = setInterval(() => {
+            const timeEl = document.querySelector('.countdown-timer');
+            if (!timeEl) { clearInterval(this.countdownInterval); return; }
+            const t = FB.getTimeUntilSunday8AM();
+            if (t <= 0) {
+                timeEl.textContent = '🔄 Đang phát thưởng...';
+                clearInterval(this.countdownInterval);
+                this.render();
+                return;
+            }
+            const d = Math.floor(t / 86400000);
+            const h = Math.floor((t % 86400000) / 3600000);
+            const m = Math.floor((t % 3600000) / 60000);
+            const s = Math.floor((t % 60000) / 1000);
+            timeEl.textContent = `${d}ngày ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        }, 1000);
+    }
 }
 
 class PvPPage {
@@ -477,7 +610,7 @@ class AdminPage {
                 </div>
                 <div class="card"><div class="card-title">👥 Bạn bè</div><label class="input-label">Thưởng mời bạn (số_bạn:🪙)</label><input class="input" id="cfgFriendRewards" value="${Object.entries(friendRewards).map(([k,v])=>`${k}:${v}`).join(',')}"><label class="input-label">Giới hạn mời/ngày</label><input class="input" id="cfgMaxFriendsPerDay" type="number" value="${maxFriendsPerDay}"></div>
                 <div class="card"><div class="card-title">🎮 PvP</div><label class="input-label">Cược tối thiểu</label><input class="input" id="cfgMinBet" type="number" value="${minBet}"><label class="input-label">Cược tối đa</label><input class="input" id="cfgMaxBet" type="number" value="${maxBet}"><label class="input-label">Phí PvP (%)</label><input class="input" id="cfgPvpFee" type="number" value="${pvpFee}" step="0.1"><label class="input-label">Đếm ngược PvP (giây)</label><input class="input" id="cfgPvpTimeout" type="number" value="${pvpTimeout}"></div>
-                <div class="card"><div class="card-title">💸 Rút 🪙</div><label class="input-label">Rút tối thiểu</label><input class="input" id="cfgMinWithdraw" type="number" value="${minWithdraw}"><label class="input-label">Rút tối đa/lần</label><input class="input" id="cfgMaxWithdraw" type="number" value="${maxWithdraw}"><label class="input-label">Số lần rút/ngày</label><input class="input" id="cfgMaxWithdrawPerDay" type="number" value="${maxWithdrawPerDay}"><label class="input-label">💱 Tỷ giá (3🪙 = ? VND)</label><input class="input" id="cfgRate" type="number" value="${rate}"></div>
+                <div class="card"><div class="card-title">💸 Rút 🪙</div><label class="input-label">Rút tối thiểu</label><input class="input" id="cfgMinWithdraw" type="number" value="${minWithdraw}"><label class="input-label">Rút tối đa/lần</label><input class="input" id="cfgMaxWithdraw" type="number" value="${maxWithdraw}"><label class="input-label">Số lần rút/ngày</label><input class="input" id="cfgMaxWithdrawPerDay" type="number" value="${maxWithdrawPerDay}"><label class="input-label">💱 Tỷ giá (1 🪙 = ? VND)</label><input class="input" id="cfgRate" type="number" value="${rate}"></div>
                 <button class="btn btn-primary" id="saveConfig">💾 Lưu cấu hình</button>
             `;
             document.getElementById('saveConfig').onclick = async () => {
