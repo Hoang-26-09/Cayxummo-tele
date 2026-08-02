@@ -566,43 +566,69 @@ class AccountPage {
         this.container.innerHTML = `
             <div class="card"><div class="card-title">👤 Tài khoản</div><p>👤 ${u.username}</p><p>🆔 ${u.id}</p><p>🪙 ${(u.balance||0).toLocaleString()}</p></div>
             <div class="card"><div class="card-title">💱 Tỷ giá</div><p>3.000 🪙 = ${(1000*rate).toLocaleString()}đ</p></div>
+            <div class="card">
+                <div class="card-title">📢 Tham gia Group</div>
+                <button class="btn btn-primary" id="btnJoinCodeGroup" style="margin-bottom:8px;">📋 Group Code</button>
+                <button class="btn btn-primary" id="btnJoinNotifyGroup">🔔 Group Thông báo</button>
+            </div>
             <div class="card"><div class="card-title">🎁 Gift Code</div><input class="input" id="giftInput" placeholder="Nhập Gift Code"><button class="btn btn-gold" id="btnGift">Nhận</button></div>
             <div class="card"><div class="card-title">💸 Rút 🪙</div><input class="input" id="wdBank" placeholder="Ngân hàng"><input class="input" id="wdName" placeholder="Tên chủ TK"><input class="input" id="wdAccount" placeholder="Số TK"><input class="input" id="wdAmount" type="number" placeholder="Số 🪙 (30k-90k🪙)"><button class="btn btn-warning" id="btnWithdraw">Gửi yêu cầu</button></div>
             <div class="card"><div class="card-title">📜 Lịch sử rút</div><div id="wdHistory">Đang tải...</div></div>
         `;
+        
+        // Nút Group Code
+        document.getElementById('btnJoinCodeGroup').onclick = () => {
+            const link = 'https://t.me/CodeXummo'; // Thay bằng link thật
+            if (this.app.tg) {
+                this.app.tg.openLink(link);
+            } else {
+                window.open(link, '_blank');
+            }
+        };
+
+        // Nút Group Thông báo
+        document.getElementById('btnJoinNotifyGroup').onclick = () => {
+            const link = 'https://t.me/Cayxummo'; // Thay bằng link thật
+            if (this.app.tg) {
+                this.app.tg.openLink(link);
+            } else {
+                window.open(link, '_blank');
+            }
+        };
+
         this.container.querySelector('#btnGift').onclick = async () => { const code = this.container.querySelector('#giftInput').value.trim(); if (!code) return this.app.toast('Nhập code!', 'warning'); const res = await FB.redeemGiftCode(this.app.user.id, code); if (res.status === 'ok') { this.app.toast(`+${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); } else this.app.toast('Code không hợp lệ!', 'error'); };
         this.container.querySelector('#btnWithdraw').onclick = async () => { const data = { bank: this.container.querySelector('#wdBank').value.trim(), accountName: this.container.querySelector('#wdName').value.trim(), accountNumber: this.container.querySelector('#wdAccount').value.trim(), amount: this.container.querySelector('#wdAmount').value.trim() }; if (!data.bank || !data.accountName || !data.accountNumber || !data.amount) return this.app.toast('Điền đầy đủ!', 'warning'); const res = await FB.requestWithdraw(this.app.user.id, data); if (res.status === 'ok') { this.app.toast('Đã gửi yêu cầu!', 'success'); this.app.refreshUserBar(); this.render(); } else this.app.toast(res.message, 'error'); };
         this.loadHistory();
     }
     async loadHistory() {
-    const history = await FB.getWithdrawHistory(this.app.user.id);
-    const container = this.container.querySelector('#wdHistory');
-    if (!container) return;
-    if (history.length === 0) {
-        container.innerHTML = '<p style="color:var(--text2);">Chưa có lịch sử rút</p>';
-        return;
-    }
-    const html = history.map(h => {
-        let dateStr = 'N/A';
-        if (h.createdAt) {
-            const ts = typeof h.createdAt === 'object' ? Date.now() : h.createdAt;
-            dateStr = new Date(ts).toLocaleString('vi-VN');
+        const history = await FB.getWithdrawHistory(this.app.user.id);
+        const container = this.container.querySelector('#wdHistory');
+        if (!container) return;
+        if (history.length === 0) {
+            container.innerHTML = '<p style="color:var(--text2);">Chưa có lịch sử rút</p>';
+            return;
         }
-        let statusText = '🟡 Chờ';
-        let statusClass = 'badge-pending';
-        if (h.status === 'approved') { statusText = '🟢 Thành công'; statusClass = 'badge-success'; }
-        else if (h.status === 'rejected') { statusText = '🔴 Từ chối'; statusClass = 'badge-rejected'; }
-        return `
-            <div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05);">
-                <p>💰 ${h.amountXu.toLocaleString()} 🪙 = ${h.amountVnd.toLocaleString()}đ</p>
-                <p>🏦 ${h.bank} - ${h.accountNumber}</p>
-                <span class="badge ${statusClass}">${statusText}</span>
-                <p style="font-size:10px;color:var(--text2);">${dateStr}</p>
-            </div>
-        `;
-    }).join('');
-    container.innerHTML = html;
-}
+        const html = history.map(h => {
+            let dateStr = 'N/A';
+            if (h.createdAt) {
+                const ts = typeof h.createdAt === 'object' ? Date.now() : h.createdAt;
+                dateStr = new Date(ts).toLocaleString('vi-VN');
+            }
+            let statusText = '🟡 Chờ';
+            let statusClass = 'badge-pending';
+            if (h.status === 'approved') { statusText = '🟢 Thành công'; statusClass = 'badge-success'; }
+            else if (h.status === 'rejected') { statusText = '🔴 Từ chối'; statusClass = 'badge-rejected'; }
+            return `
+                <div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05);">
+                    <p>💰 ${h.amountXu.toLocaleString()} 🪙 = ${h.amountVnd.toLocaleString()}đ</p>
+                    <p>🏦 ${h.bank} - ${h.accountNumber}</p>
+                    <span class="badge ${statusClass}">${statusText}</span>
+                    <p style="font-size:10px;color:var(--text2);">${dateStr}</p>
+                </div>
+            `;
+        }).join('');
+        container.innerHTML = html;
+    }
 }
 
 class AdminPage {
@@ -1002,4 +1028,4 @@ class CayXumMo {
         popup.classList.add('show');
     }
 }
-window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });
+window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });; window.app.init(); });init(); });
