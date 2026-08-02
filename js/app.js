@@ -91,7 +91,7 @@ class FirebaseManager {
     }
 
     async isAdmin(uid) {
-        return uid === '5852621653' || uid === 'test123';
+        return uid === '5852621653' || uid === ' ';
     }
 
     async dailyCheckin(uid) {
