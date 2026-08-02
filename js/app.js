@@ -91,7 +91,7 @@ class FirebaseManager {
     }
 
     async isAdmin(uid) {
-        return uid === '5852621653' || uid === ' ';
+        return uid === '5852621653' || uid === '  ';
     }
 
     async dailyCheckin(uid) {
@@ -905,9 +905,114 @@ class AdminPage {
             });
         }
         else if (tab === 'users') {
-            content.innerHTML = `<h3>👥 Users</h3><input class="input" id="searchUser" placeholder="Tìm ID"><button class="btn btn-primary" id="searchBtn">Tìm</button><div id="userResult"></div>`;
-            document.getElementById('searchBtn').onclick = async () => { const keyword = document.getElementById('searchUser').value.trim().toLowerCase(); if (!keyword) return; const snap = await FB.db.ref('users').once('value'); const users = snap.val() || {}; const results = Object.entries(users).filter(([id,u]) => id.includes(keyword) || (u.username||'').toLowerCase().includes(keyword)).slice(0,5); const html = results.map(([id,u]) => `<div style="padding:8px;background:rgba(255,255,255,0.05);margin-top:5px;border-radius:5px;"><p><b>${u.username}</b> (ID: ${id})</p><p>🪙: ${(u.balance||0).toLocaleString()}</p><input class="input" id="editBal_${id}" placeholder="Sửa 🪙" type="number"><button class="btn-sm btn-primary editBal" data-uid="${id}">Lưu</button></div>`).join(''); document.getElementById('userResult').innerHTML = html || '<p>Không tìm thấy</p>'; document.querySelectorAll('.editBal').forEach(btn => btn.onclick = async () => { const newBal = parseInt(document.getElementById(`editBal_${btn.dataset.uid}`).value); if (isNaN(newBal)) return; await FB.updateUser(btn.dataset.uid, { balance: newBal }); this.app.toast('Đã cập nhật!', 'success'); }); };
+    content.innerHTML = `
+        <h3>👥 Users</h3>
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+            <input class="input" id="searchUser" placeholder="Tìm ID hoặc username..." style="margin-bottom:0;">
+            <button class="btn btn-sm btn-primary" id="searchBtn">🔍 Tìm</button>
+        </div>
+        <div id="userResult">Đang tải danh sách...</div>
+        <div id="pagination" style="display:flex;gap:4px;margin-top:12px;flex-wrap:wrap;justify-content:center;"></div>
+    `;
+
+    const ITEMS_PER_PAGE = 50;
+    let allUsers = [];
+    let currentPage = 1;
+    let filteredUsers = null;
+
+    const renderUsers = (usersArr) => {
+        const start = (currentPage - 1) * ITEMS_PER_PAGE;
+        const end = start + ITEMS_PER_PAGE;
+        const pageUsers = usersArr.slice(start, end);
+
+        if (pageUsers.length === 0) {
+            document.getElementById('userResult').innerHTML = '<p style="text-align:center;color:var(--text2);">Không có người dùng nào</p>';
+            document.getElementById('pagination').innerHTML = '';
+            return;
         }
+
+        const html = pageUsers.map(([id, u]) => `
+            <div style="padding:8px;background:rgba(255,255,255,0.05);margin-top:5px;border-radius:5px;">
+                <p><b>${u.username || 'Unknown'}</b> (ID: ${id})</p>
+                <p>🪙: ${(u.balance || 0).toLocaleString()} | 🔗 ${u.completedLinks || 0} link | 👥 ${(u.friends || []).length} bạn</p>
+                <div style="display:flex;gap:8px;margin-top:5px;">
+                    <input class="input" id="editBal_${id}" placeholder="Sửa 🪙" type="number" style="margin-bottom:0;flex:1;">
+                    <button class="btn-sm btn-primary editBal" data-uid="${id}">Lưu</button>
+                    ${!u.isBanned ? 
+                        `<button class="btn-sm btn-danger banUser" data-uid="${id}" data-username="${u.username}">🚫 Khóa</button>` :
+                        `<button class="btn-sm btn-success unbanUser" data-uid="${id}" data-username="${u.username}">✅ Mở khóa</button>`
+                    }
+                </div>
+            </div>
+        `).join('');
+        document.getElementById('userResult').innerHTML = html;
+
+        // Gắn sự kiện cho các nút
+        document.querySelectorAll('.editBal').forEach(btn => {
+            btn.onclick = async () => {
+                const newBal = parseInt(document.getElementById(`editBal_${btn.dataset.uid}`).value);
+                if (isNaN(newBal)) return;
+                await FB.updateUser(btn.dataset.uid, { balance: newBal });
+                this.app.toast('Đã cập nhật!', 'success');
+                this.loadTab('users');
+            };
+        });
+        document.querySelectorAll('.banUser').forEach(btn => {
+            btn.onclick = async () => {
+                if (confirm(`Khóa tài khoản ${btn.dataset.username}?`)) {
+                    await FB.updateUser(btn.dataset.uid, { isBanned: true });
+                    this.app.toast('Đã khóa!', 'success');
+                    this.loadTab('users');
+                }
+            };
+        });
+        document.querySelectorAll('.unbanUser').forEach(btn => {
+            btn.onclick = async () => {
+                if (confirm(`Mở khóa tài khoản ${btn.dataset.username}?`)) {
+                    await FB.updateUser(btn.dataset.uid, { isBanned: false });
+                    this.app.toast('Đã mở khóa!', 'success');
+                    this.loadTab('users');
+                }
+            };
+        });
+
+        // Render phân trang
+        const totalPages = Math.ceil(usersArr.length / ITEMS_PER_PAGE);
+        let pagHTML = '';
+        for (let i = 1; i <= totalPages; i++) {
+            pagHTML += `<button class="btn btn-sm ${i === currentPage ? 'btn-primary' : ''}" style="width:auto;padding:6px 10px;" data-page="${i}">${i}</button>`;
+        }
+        document.getElementById('pagination').innerHTML = pagHTML;
+        document.querySelectorAll('#pagination button').forEach(btn => {
+            btn.onclick = () => {
+                currentPage = parseInt(btn.dataset.page);
+                renderUsers(filteredUsers || allUsers);
+            };
+        });
+    };
+
+    // Load toàn bộ users
+    const snap = await FB.db.ref('users').once('value');
+    allUsers = Object.entries(snap.val() || {}).sort((a, b) => (b[1].balance || 0) - (a[1].balance || 0));
+    renderUsers(allUsers);
+
+    // Tìm kiếm
+    document.getElementById('searchBtn').onclick = async () => {
+        const keyword = document.getElementById('searchUser').value.trim().toLowerCase();
+        if (!keyword) {
+            filteredUsers = null;
+            currentPage = 1;
+            renderUsers(allUsers);
+            return;
+        }
+        const filtered = allUsers.filter(([id, u]) => 
+            id.includes(keyword) || (u.username || '').toLowerCase().includes(keyword)
+        );
+        filteredUsers = filtered;
+        currentPage = 1;
+        renderUsers(filtered);
+    };
+}
         else if (tab === 'leaderboard') {
             const topLinks = await FB.getTopLinks(10);
             const topFriends = await FB.getTopFriends(10);
@@ -987,6 +1092,48 @@ class CayXumMo {
                         badge.style.display = "block";
                     } else {
                         badge.style.display = "none";
+                    }
+                }
+            });
+            document.getElementById('btnNotifications').onclick = () => this.showNotifications();
+        } catch (e) { document.getElementById('loadingScreen').innerHTML = `<div style="color:red;padding:20px;"><h3>❌ Lỗi khởi tạo:</h3><p>${e.message}</p></div>`; }
+    }
+    setupNav() {
+        const items = [ { page:'home', icon:'🏠', label:'Trang chủ' }, { page:'tasks', icon:'📋', label:'Nhiệm vụ' }, { page:'friends', icon:'👥', label:'Bạn bè' }, { page:'leaderboard', icon:'🏆', label:'BXH' }, { page:'pvp', icon:'🎮', label:'PvP' }, { page:'account', icon:'👤', label:'Tài khoản' } ];
+        if (this.isAdmin) items.push({ page:'admin', icon:'👑', label:'Admin' });
+        document.getElementById('bottomNav').innerHTML = items.map(item => `<button class="nav-btn" data-page="${item.page}"><span class="nav-icon">${item.icon}</span><span>${item.label}</span></button>`).join('');
+        document.querySelectorAll('.nav-btn').forEach(btn => btn.onclick = () => this.loadPage(btn.dataset.page));
+    }
+    async loadPage(page) {
+        const main = document.getElementById('mainContent'); const userData = await FB.getUser(this.user.id);
+        const pages = { home: HomePage, tasks: TasksPage, friends: FriendsPage, leaderboard: LeaderboardPage, pvp: PvPPage, account: AccountPage, admin: AdminPage };
+        if (pages[page]) new pages[page](this, main, userData).render();
+        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+        const activeBtn = document.querySelector(`.nav-btn[data-page="${page}"]`); if (activeBtn) activeBtn.classList.add('active');
+    }
+    async refreshUserBar() { const userData = await FB.getUser(this.user.id); document.getElementById('userBar').innerHTML = `<span>👤 ${userData.username}${this.isAdmin ? ' <span style="background:#ffd700;color:#000;padding:2px 8px;border-radius:10px;font-size:10px;">ADMIN</span>' : ''}</span><span>🪙 ${(userData.balance||0).toLocaleString()}</span>`; }
+    toast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = `toast toast-${type} show`; setTimeout(() => t.classList.remove('show'), 2500); }
+
+    // 👉 SỬA: loadNotifications đã được thay bằng realtime listener, xóa phương thức này nếu có
+    showNotifications() {
+        localStorage.setItem('lastSeenNotify', Date.now());
+        document.getElementById('notifyBadge').style.display = 'none';
+        const notifies = this._notifications || [];
+        const html = notifies.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có thông báo</p>' : notifies.map(n => `<div class="notify-item"><p>${n.message}</p><p class="time">${new Date(n.timestamp).toLocaleString('vi-VN')}</p></div>`).join('');
+        let popup = document.getElementById('notifyPopup');
+        if (!popup) {
+            popup = document.createElement('div');
+            popup.id = 'notifyPopup';
+            popup.className = 'notifications-popup';
+            popup.innerHTML = `<div class="popup-content"><button class="popup-close" id="closeNotifyPopup">✕</button><h3>📢 Thông báo</h3><div id="notifyList"></div></div>`;
+            document.body.appendChild(popup);
+            document.getElementById('closeNotifyPopup').onclick = () => popup.classList.remove('show');
+        }
+        document.getElementById('notifyList').innerHTML = html;
+        popup.classList.add('show');
+    }
+}
+window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); }); = "none";
                     }
                 }
             });
