@@ -420,7 +420,11 @@ class TasksPage {
             goBtn.onclick = async () => {
                 const task = await FB.getRandomTask(this.app.user.id);
                 if (task) {
-                    window.open(task.link, '_blank');
+                    if (this.app.tg) {
+                        this.app.tg.openLink(task.link);
+                    } else {
+                        window.open(task.link, '_blank');
+                    }
                     this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
                 } else {
                     this.app.toast('Hết link! Admin đang thêm link mới...', 'warning');
@@ -463,6 +467,10 @@ class FriendsPage {
 class LeaderboardPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     async render() {
+        // 👉 SỬA: Clear interval cũ trước khi tạo mới
+        if (this.countdownInterval) {
+            clearInterval(this.countdownInterval);
+        }
         // Kiểm tra và phát thưởng nếu đến giờ
         await FB.checkAndDistributeRewards();
         
@@ -667,31 +675,29 @@ class AdminPage {
             document.querySelectorAll('.btn-danger').forEach(btn => btn.onclick = async () => { await FB.db.ref(`gift_codes/${btn.dataset.code}`).remove(); this.loadTab('giftcodes'); });
         }
         else if (tab === 'withdraws') {
-    const wSnap = await FB.db.ref('withdraw_requests').once('value');
-    const withdraws = [];
-    wSnap.forEach(c => {
-        withdraws.push({ id: c.key, ...c.val() });
-    });
-    // Sắp xếp giảm dần theo createdAt (nếu có)
-    withdraws.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    console.log('Withdraws data:', withdraws); // Debug
-    content.innerHTML = `<h3>💸 Rút 🪙 (Tất cả: ${withdraws.length})</h3>
-        <div style="display:flex;gap:8px;margin-bottom:12px;">
-            <button class="btn btn-sm btn-primary filter-withdraw active" data-filter="all">Tất cả</button>
-            <button class="btn btn-sm btn-warning filter-withdraw" data-filter="pending">🟡 Chờ duyệt</button>
-            <button class="btn btn-sm btn-success filter-withdraw" data-filter="approved">🟢 Đã duyệt</button>
-            <button class="btn btn-sm btn-danger filter-withdraw" data-filter="rejected">🔴 Từ chối</button>
-        </div>
-        <div id="withdrawList">
-            ${withdraws.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có yêu cầu rút nào</p>' :
-            withdraws.map(w => `<div class="withdraw-item" data-status="${w.status}" style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;">
-                <p>👤 ${w.username} | 🪙 ${w.amountXu.toLocaleString()}</p>
-                <p>🏦 ${w.bank} | 👤 ${w.accountName} | 💳 ${w.accountNumber}</p>
-                <span class="badge badge-${w.status==='pending'?'pending':w.status==='approved'?'success':'rejected'}">${w.status==='pending'?'🟡 Chờ':w.status==='approved'?'🟢 Thành công':'🔴 Từ chối'}</span>
-                ${w.status==='pending' ? `<button class="btn-sm btn-success approve" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Duyệt</button><button class="btn-sm btn-danger reject" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Từ chối</button>` : ''}
-                <br><small>${new Date(w.createdAt).toLocaleString('vi-VN')}</small>
-            </div>`).join('')}
-        </div>`;
+            const wSnap = await FB.db.ref('withdraw_requests').once('value');
+            const withdraws = [];
+            wSnap.forEach(c => {
+                withdraws.push({ id: c.key, ...c.val() });
+            });
+            // Sắp xếp giảm dần theo createdAt (nếu có)
+            withdraws.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            content.innerHTML = `<h3>💸 Rút 🪙 (Tất cả: ${withdraws.length})</h3>
+                <div style="display:flex;gap:8px;margin-bottom:12px;">
+                    <button class="btn btn-sm btn-primary filter-withdraw active" data-filter="all">Tất cả</button>
+                    <button class="btn btn-sm btn-warning filter-withdraw" data-filter="pending">🟡 Chờ duyệt</button>
+                    <button class="btn btn-sm btn-success filter-withdraw" data-filter="approved">🟢 Đã duyệt</button>
+                    <button class="btn btn-sm btn-danger filter-withdraw" data-filter="rejected">🔴 Từ chối</button>
+                </div>
+                <div id="withdrawList">
+                    ${withdraws.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có yêu cầu rút nào</p>' :
+                    withdraws.map(w => `<div class="withdraw-item" data-status="${w.status}" style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;">
+                        <p>👤 ${w.username} | 🪙 ${w.amountXu.toLocaleString()}</p>
+                        <p>🏦 ${w.bank} | 👤 ${w.accountName} | 💳 ${w.accountNumber}</p>
+                        <span class="badge badge-${w.status==='pending'?'pending':w.status==='approved'?'success':'rejected'}">${w.status==='pending'?'🟡 Chờ':w.status==='approved'?'🟢 Thành công':'🔴 Từ chối'}</span>
+                        ${w.status==='pending' ? `<button class="btn-sm btn-success approve" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Duyệt</button><button class="btn-sm btn-danger reject" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Từ chối</button>` : ''}
+                    </div>`).join('')}
+                </div>`;
             document.querySelectorAll('.filter-withdraw').forEach(btn => {
                 btn.onclick = () => {
                     document.querySelectorAll('.filter-withdraw').forEach(b => b.classList.remove('active'));
@@ -783,7 +789,24 @@ class CayXumMo {
             await FB.createUser(this.user.id, this.user); this.isAdmin = await FB.isAdmin(this.user.id);
             document.getElementById('loadingScreen').style.display = 'none'; document.getElementById('app').style.display = 'flex';
             this.setupNav(); this.loadPage('home'); this.refreshUserBar();
-            this.loadNotifications();
+            // 👉 SỬA: Realtime listener cho thông báo
+            FB.db.ref("notifications").orderByChild("timestamp").limitToLast(20).on("value", snap => {
+                const arr = [];
+                snap.forEach(c => { arr.push(c.val()); });
+                arr.reverse();
+                this._notifications = arr;
+                const lastSeen = Number(localStorage.getItem("lastSeenNotify") || 0);
+                const newCount = arr.filter(n => n.timestamp > lastSeen).length;
+                const badge = document.getElementById("notifyBadge");
+                if (badge) {
+                    if (newCount > 0) {
+                        badge.textContent = newCount;
+                        badge.style.display = "block";
+                    } else {
+                        badge.style.display = "none";
+                    }
+                }
+            });
             document.getElementById('btnNotifications').onclick = () => this.showNotifications();
         } catch (e) { document.getElementById('loadingScreen').innerHTML = `<div style="color:red;padding:20px;"><h3>❌ Lỗi khởi tạo:</h3><p>${e.message}</p></div>`; }
     }
@@ -803,19 +826,7 @@ class CayXumMo {
     async refreshUserBar() { const userData = await FB.getUser(this.user.id); document.getElementById('userBar').innerHTML = `<span>👤 ${userData.username}${this.isAdmin ? ' <span style="background:#ffd700;color:#000;padding:2px 8px;border-radius:10px;font-size:10px;">ADMIN</span>' : ''}</span><span>🪙 ${(userData.balance||0).toLocaleString()}</span>`; }
     toast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = `toast toast-${type} show`; setTimeout(() => t.classList.remove('show'), 2500); }
 
-    async loadNotifications() {
-        const snap = await FB.db.ref('notifications').orderByChild('timestamp').limitToLast(20).once('value');
-        const notifies = []; snap.forEach(c => notifies.push(c.val())); notifies.reverse();
-        this._notifications = notifies;
-        const lastSeen = Number(localStorage.getItem('lastSeenNotify') || 0);
-        const newCount = notifies.filter(n => n.timestamp > lastSeen).length;
-        const badge = document.getElementById('notifyBadge');
-        if (badge) {
-            if (newCount > 0) { badge.textContent = newCount; badge.style.display = 'block'; }
-            else { badge.style.display = 'none'; }
-        }
-    }
-
+    // 👉 SỬA: loadNotifications đã được thay bằng realtime listener, xóa phương thức này nếu có
     showNotifications() {
         localStorage.setItem('lastSeenNotify', Date.now());
         document.getElementById('notifyBadge').style.display = 'none';
