@@ -237,7 +237,7 @@ class FirebaseManager {
             userId: uid, username: user.username, bank: data.bank,
             accountName: data.accountName, accountNumber: data.accountNumber,
             amountXu: amount, amountVnd: amount * rate, exchangeRate: rate,
-            status: 'pending', createdAt: Date.now()
+            status: 'pending', createdAt: firebase.database.ServerValue.TIMESTAMP
         });
         await this.addBalance(uid, -amount);
         return { status: 'ok', id: ref.key };
@@ -487,7 +487,7 @@ class LeaderboardPage {
             <div class="card">
                 <div class="card-title">🏆 Top vượt link</div>
                 <p style="font-size:12px;color:var(--text2);">Reset mỗi Chủ nhật 8h sáng</p>
-                <p style="text-align:center;font-size:18px;font-weight:bold;color:var(--accent);margin:8px 0;">⏰ Còn: ${countdownStr}</p>
+                <p style="text-align:center;font-size:18px;font-weight:bold;color:var(--accent);margin:8px 0;" class="countdown-timer">⏰ Còn: ${countdownStr}</p>
                 <div id="topLinks">
                     ${top.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có dữ liệu</p>' : 
                     top.map((u,i) => `<div class="leaderboard-item">
@@ -538,7 +538,7 @@ class AccountPage {
             <div class="card"><div class="card-title">👤 Tài khoản</div><p>👤 ${u.username}</p><p>🆔 ${u.id}</p><p>🪙 ${(u.balance||0).toLocaleString()}</p></div>
             <div class="card"><div class="card-title">💱 Tỷ giá</div><p>3.000 🪙 = ${(1000*rate).toLocaleString()}đ</p></div>
             <div class="card"><div class="card-title">🎁 Gift Code</div><input class="input" id="giftInput" placeholder="Nhập Gift Code"><button class="btn btn-gold" id="btnGift">Nhận</button></div>
-            <div class="card"><div class="card-title">💸 Rút 🪙</div><input class="input" id="wdBank" placeholder="Ngân hàng"><input class="input" id="wdName" placeholder="Tên chủ TK"><input class="input" id="wdAccount" placeholder="Số TK"><input class="input" id="wdAmount" type="number" placeholder="Số 🪙 (20k-100k)"><button class="btn btn-warning" id="btnWithdraw">Gửi yêu cầu</button></div>
+            <div class="card"><div class="card-title">💸 Rút 🪙</div><input class="input" id="wdBank" placeholder="Ngân hàng"><input class="input" id="wdName" placeholder="Tên chủ TK"><input class="input" id="wdAccount" placeholder="Số TK"><input class="input" id="wdAmount" type="number" placeholder="Số 🪙 (30k-90k🪙)"><button class="btn btn-warning" id="btnWithdraw">Gửi yêu cầu</button></div>
             <div class="card"><div class="card-title">📜 Lịch sử rút</div><div id="wdHistory">Đang tải...</div></div>
         `;
         this.container.querySelector('#btnGift').onclick = async () => { const code = this.container.querySelector('#giftInput').value.trim(); if (!code) return this.app.toast('Nhập code!', 'warning'); const res = await FB.redeemGiftCode(this.app.user.id, code); if (res.status === 'ok') { this.app.toast(`+${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); } else this.app.toast('Code không hợp lệ!', 'error'); };
@@ -610,7 +610,7 @@ class AdminPage {
                 </div>
                 <div class="card"><div class="card-title">👥 Bạn bè</div><label class="input-label">Thưởng mời bạn (số_bạn:🪙)</label><input class="input" id="cfgFriendRewards" value="${Object.entries(friendRewards).map(([k,v])=>`${k}:${v}`).join(',')}"><label class="input-label">Giới hạn mời/ngày</label><input class="input" id="cfgMaxFriendsPerDay" type="number" value="${maxFriendsPerDay}"></div>
                 <div class="card"><div class="card-title">🎮 PvP</div><label class="input-label">Cược tối thiểu</label><input class="input" id="cfgMinBet" type="number" value="${minBet}"><label class="input-label">Cược tối đa</label><input class="input" id="cfgMaxBet" type="number" value="${maxBet}"><label class="input-label">Phí PvP (%)</label><input class="input" id="cfgPvpFee" type="number" value="${pvpFee}" step="0.1"><label class="input-label">Đếm ngược PvP (giây)</label><input class="input" id="cfgPvpTimeout" type="number" value="${pvpTimeout}"></div>
-                <div class="card"><div class="card-title">💸 Rút 🪙</div><label class="input-label">Rút tối thiểu</label><input class="input" id="cfgMinWithdraw" type="number" value="${minWithdraw}"><label class="input-label">Rút tối đa/lần</label><input class="input" id="cfgMaxWithdraw" type="number" value="${maxWithdraw}"><label class="input-label">Số lần rút/ngày</label><input class="input" id="cfgMaxWithdrawPerDay" type="number" value="${maxWithdrawPerDay}"><label class="input-label">💱 Tỷ giá (1 🪙 = ? VND)</label><input class="input" id="cfgRate" type="number" value="${rate}"></div>
+                <div class="card"><div class="card-title">💸 Rút 🪙</div><label class="input-label">Rút tối thiểu</label><input class="input" id="cfgMinWithdraw" type="number" value="${minWithdraw}"><label class="input-label">Rút tối đa/lần</label><input class="input" id="cfgMaxWithdraw" type="number" value="${maxWithdraw}"><label class="input-label">Số lần rút/ngày</label><input class="input" id="cfgMaxWithdrawPerDay" type="number" value="${maxWithdrawPerDay}"><label class="input-label">💱 Tỷ giá (3🪙 = ? VND)</label><input class="input" id="cfgRate" type="number" value="${rate}"></div>
                 <button class="btn btn-primary" id="saveConfig">💾 Lưu cấu hình</button>
             `;
             document.getElementById('saveConfig').onclick = async () => {
@@ -667,11 +667,53 @@ class AdminPage {
             document.querySelectorAll('.btn-danger').forEach(btn => btn.onclick = async () => { await FB.db.ref(`gift_codes/${btn.dataset.code}`).remove(); this.loadTab('giftcodes'); });
         }
         else if (tab === 'withdraws') {
-            const wSnap = await FB.db.ref('withdraw_requests').orderByChild('createdAt').limitToLast(20).once('value');
+            const wSnap = await FB.db.ref('withdraw_requests').orderByChild('createdAt').limitToLast(50).once('value');
             const withdraws = []; wSnap.forEach(c => withdraws.push({ id: c.key, ...c.val() })); withdraws.reverse();
-            content.innerHTML = `<h3>💸 Rút 🪙</h3>${withdraws.map(w => `<div style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><p>${w.username} - ${w.amountXu.toLocaleString()} 🪙 (${w.amountVnd.toLocaleString()}đ)</p><p>${w.bank} - ${w.accountNumber}</p><span class="badge badge-${w.status==='pending'?'pending':'success'}">${w.status}</span>${w.status==='pending' ? `<button class="btn-sm btn-success approve" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Duyệt</button><button class="btn-sm btn-danger reject" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Từ chối</button>` : ''}</div>`).join('')}`;
-            document.querySelectorAll('.approve').forEach(btn => btn.onclick = async () => { await FB.db.ref(`withdraw_requests/${btn.dataset.id}`).update({ status: 'approved', reviewedBy: this.app.user.username, reviewedAt: Date.now() }); this.app.toast('Đã duyệt!', 'success'); this.loadTab('withdraws'); });
-            document.querySelectorAll('.reject').forEach(btn => btn.onclick = async () => { await FB.addBalance(btn.dataset.uid, parseInt(btn.dataset.amount)); await FB.db.ref(`withdraw_requests/${btn.dataset.id}`).update({ status: 'rejected', reviewedBy: this.app.user.username, reviewedAt: Date.now() }); this.app.toast('Đã từ chối, hoàn 🪙!', 'warning'); this.loadTab('withdraws'); });
+            content.innerHTML = `<h3>💸 Rút 🪙</h3>
+                <div style="display:flex;gap:8px;margin-bottom:12px;">
+                    <button class="btn btn-sm btn-primary filter-withdraw active" data-filter="all">Tất cả</button>
+                    <button class="btn btn-sm btn-warning filter-withdraw" data-filter="pending">🟡 Chờ duyệt</button>
+                    <button class="btn btn-sm btn-success filter-withdraw" data-filter="approved">🟢 Đã duyệt</button>
+                    <button class="btn btn-sm btn-danger filter-withdraw" data-filter="rejected">🔴 Từ chối</button>
+                </div>
+                <div id="withdrawList">
+                    ${withdraws.map(w => `<div class="withdraw-item" data-status="${w.status}" style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;">
+                        <p>${w.username} - ${w.amountXu.toLocaleString()} 🪙 (${w.amountVnd.toLocaleString()}đ)</p>
+                        <p>${w.bank} - ${w.accountNumber}</p>
+                        <span class="badge badge-${w.status==='pending'?'pending':w.status==='approved'?'success':'rejected'}">${w.status==='pending'?'🟡 Chờ':w.status==='approved'?'🟢 Thành công':'🔴 Từ chối'}</span>
+                        ${w.status==='pending' ? `<button class="btn-sm btn-success approve" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Duyệt</button><button class="btn-sm btn-danger reject" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Từ chối</button>` : ''}
+                    </div>`).join('') || '<p style="text-align:center;color:var(--text2);">Chưa có yêu cầu rút nào</p>'}
+                </div>`;
+            document.querySelectorAll('.filter-withdraw').forEach(btn => {
+                btn.onclick = () => {
+                    document.querySelectorAll('.filter-withdraw').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    const filter = btn.dataset.filter;
+                    document.querySelectorAll('.withdraw-item').forEach(item => {
+                        item.style.display = (filter === 'all' || item.dataset.status === filter) ? 'block' : 'none';
+                    });
+                };
+            });
+            document.querySelectorAll('.approve').forEach(btn => {
+                btn.onclick = async () => {
+                    if (!confirm('Xác nhận duyệt yêu cầu này?')) return;
+                    await FB.db.ref(`withdraw_requests/${btn.dataset.id}`).update({
+                        status: 'approved', reviewedBy: this.app.user.username, reviewedAt: firebase.database.ServerValue.TIMESTAMP
+                    });
+                    this.app.toast('Đã duyệt!', 'success'); this.loadTab('withdraws');
+                };
+            });
+            document.querySelectorAll('.reject').forEach(btn => {
+                btn.onclick = async () => {
+                    const reason = prompt('Lý do từ chối (không bắt buộc):');
+                    if (!confirm('Xác nhận từ chối yêu cầu này?')) return;
+                    await FB.addBalance(btn.dataset.uid, parseInt(btn.dataset.amount));
+                    await FB.db.ref(`withdraw_requests/${btn.dataset.id}`).update({
+                        status: 'rejected', reviewedBy: this.app.user.username, reviewedAt: firebase.database.ServerValue.TIMESTAMP, rejectReason: reason || ''
+                    });
+                    this.app.toast('Đã từ chối, hoàn 🪙!', 'warning'); this.loadTab('withdraws');
+                };
+            });
         }
         else if (tab === 'users') {
             content.innerHTML = `<h3>👥 Users</h3><input class="input" id="searchUser" placeholder="Tìm ID"><button class="btn btn-primary" id="searchBtn">Tìm</button><div id="userResult"></div>`;
@@ -695,7 +737,7 @@ class AdminPage {
             document.getElementById('btnNotify').onclick = async () => {
                 const msg = document.getElementById('notifyMsg').value.trim();
                 if (!msg) return this.app.toast('Nhập nội dung!', 'warning');
-                await FB.db.ref('notifications').push({ message: msg, sentBy: this.app.user.username, timestamp: Date.now() });
+                await FB.db.ref('notifications').push({ message: msg, sentBy: this.app.user.username, timestamp: firebase.database.ServerValue.TIMESTAMP });
                 this.app.toast('Đã gửi thông báo!', 'success');
                 document.getElementById('notifyMsg').value = '';
                 this.loadTab('notify');
