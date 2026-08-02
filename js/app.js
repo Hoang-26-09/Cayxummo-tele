@@ -685,8 +685,8 @@ class AdminPage {
         <div id="withdrawList">
             ${withdraws.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có yêu cầu rút nào</p>' :
             withdraws.map(w => `<div class="withdraw-item" data-status="${w.status}" style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;">
-                <p>${w.username} - ${(w.amountXu || 0).toLocaleString()} 🪙 (${(w.amountVnd || 0).toLocaleString()}đ)</p>
-                <p>${w.bank} - ${w.accountNumber}</p>
+                <p>👤 ${w.username} | 🪙 ${w.amountXu.toLocaleString()}</p>
+                <p>🏦 ${w.bank} | 👤 ${w.accountName} | 💳 ${w.accountNumber}</p>
                 <span class="badge badge-${w.status==='pending'?'pending':w.status==='approved'?'success':'rejected'}">${w.status==='pending'?'🟡 Chờ':w.status==='approved'?'🟢 Thành công':'🔴 Từ chối'}</span>
                 ${w.status==='pending' ? `<button class="btn-sm btn-success approve" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Duyệt</button><button class="btn-sm btn-danger reject" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Từ chối</button>` : ''}
                 <br><small>${new Date(w.createdAt).toLocaleString('vi-VN')}</small>
