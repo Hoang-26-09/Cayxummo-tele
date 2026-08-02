@@ -473,7 +473,7 @@ class TasksPage {
 class FriendsPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     render() {
-        const u = this.userData; const refLink = `https://t.me/${this.app.tg.botUsername || 'cayxummo_bot'}app?startapp=${u.id}`;
+        const u = this.userData; const refLink = `https://t.me/${this.app.tg.botUsername || 'cayxummo_bot'}/app?startapp=${u.id}`;
         this.container.innerHTML = `
             <div class="card"><div class="card-title">👥 Mời bạn bè</div><p style="font-size:13px;color:var(--text2);">Link mời của bạn:</p><div style="background:rgba(255,255,255,0.05);padding:10px;border-radius:8px;word-break:break-all;margin-bottom:10px;">${refLink}</div><button class="btn btn-primary" id="copyLink">📋 Copy link</button><p style="margin-top:12px;">🎁 Thưởng:<br>2 bạn → +100 🪙<br>5 bạn → +300 🪙<br>10 bạn → +1.000 🪙</p></div>
             <div class="card"><div class="card-title">📊 Bạn đã mời: ${(u.friends||[]).length}</div></div>
