@@ -1133,46 +1133,4 @@ class CayXumMo {
         popup.classList.add('show');
     }
 }
-window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); }); = "none";
-                    }
-                }
-            });
-            document.getElementById('btnNotifications').onclick = () => this.showNotifications();
-        } catch (e) { document.getElementById('loadingScreen').innerHTML = `<div style="color:red;padding:20px;"><h3>❌ Lỗi khởi tạo:</h3><p>${e.message}</p></div>`; }
-    }
-    setupNav() {
-        const items = [ { page:'home', icon:'🏠', label:'Trang chủ' }, { page:'tasks', icon:'📋', label:'Nhiệm vụ' }, { page:'friends', icon:'👥', label:'Bạn bè' }, { page:'leaderboard', icon:'🏆', label:'BXH' }, { page:'pvp', icon:'🎮', label:'PvP' }, { page:'account', icon:'👤', label:'Tài khoản' } ];
-        if (this.isAdmin) items.push({ page:'admin', icon:'👑', label:'Admin' });
-        document.getElementById('bottomNav').innerHTML = items.map(item => `<button class="nav-btn" data-page="${item.page}"><span class="nav-icon">${item.icon}</span><span>${item.label}</span></button>`).join('');
-        document.querySelectorAll('.nav-btn').forEach(btn => btn.onclick = () => this.loadPage(btn.dataset.page));
-    }
-    async loadPage(page) {
-        const main = document.getElementById('mainContent'); const userData = await FB.getUser(this.user.id);
-        const pages = { home: HomePage, tasks: TasksPage, friends: FriendsPage, leaderboard: LeaderboardPage, pvp: PvPPage, account: AccountPage, admin: AdminPage };
-        if (pages[page]) new pages[page](this, main, userData).render();
-        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-        const activeBtn = document.querySelector(`.nav-btn[data-page="${page}"]`); if (activeBtn) activeBtn.classList.add('active');
-    }
-    async refreshUserBar() { const userData = await FB.getUser(this.user.id); document.getElementById('userBar').innerHTML = `<span>👤 ${userData.username}${this.isAdmin ? ' <span style="background:#ffd700;color:#000;padding:2px 8px;border-radius:10px;font-size:10px;">ADMIN</span>' : ''}</span><span>🪙 ${(userData.balance||0).toLocaleString()}</span>`; }
-    toast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = `toast toast-${type} show`; setTimeout(() => t.classList.remove('show'), 2500); }
-
-    // 👉 SỬA: loadNotifications đã được thay bằng realtime listener, xóa phương thức này nếu có
-    showNotifications() {
-        localStorage.setItem('lastSeenNotify', Date.now());
-        document.getElementById('notifyBadge').style.display = 'none';
-        const notifies = this._notifications || [];
-        const html = notifies.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có thông báo</p>' : notifies.map(n => `<div class="notify-item"><p>${n.message}</p><p class="time">${new Date(n.timestamp).toLocaleString('vi-VN')}</p></div>`).join('');
-        let popup = document.getElementById('notifyPopup');
-        if (!popup) {
-            popup = document.createElement('div');
-            popup.id = 'notifyPopup';
-            popup.className = 'notifications-popup';
-            popup.innerHTML = `<div class="popup-content"><button class="popup-close" id="closeNotifyPopup">✕</button><h3>📢 Thông báo</h3><div id="notifyList"></div></div>`;
-            document.body.appendChild(popup);
-            document.getElementById('closeNotifyPopup').onclick = () => popup.classList.remove('show');
-        }
-        document.getElementById('notifyList').innerHTML = html;
-        popup.classList.add('show');
-    }
-}
 window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });
