@@ -572,7 +572,7 @@ class AccountPage {
                 <button class="btn btn-primary" id="btnJoinNotifyGroup">🔔 Group Thông báo</button>
             </div>
             <div class="card"><div class="card-title">🎁 Gift Code</div><input class="input" id="giftInput" placeholder="Nhập Gift Code"><button class="btn btn-gold" id="btnGift">Nhận</button></div>
-            <div class="card"><div class="card-title">💸 Rút 🪙</div><input class="input" id="wdBank" placeholder="Ngân hàng"><input class="input" id="wdName" placeholder="Tên chủ TK"><input class="input" id="wdAccount" placeholder="Số TK"><input class="input" id="wdAmount" type="number" placeholder="Số 🪙(6000-150000🪙)"><button class="btn btn-warning" id="btnWithdraw">Gửi yêu cầu</button></div>
+            <div class="card"><div class="card-title">💸 Rút 🪙</div><input class="input" id="wdBank" placeholder="Ngân hàng"><input class="input" id="wdName" placeholder="Tên chủ TK"><input class="input" id="wdAccount" placeholder="Số TK"><input class="input" id="wdAmount" type="number" placeholder="Số 🪙(6.000-150.000🪙)"><button class="btn btn-warning" id="btnWithdraw">Gửi yêu cầu</button></div>
             <div class="card"><div class="card-title">📜 Lịch sử rút</div><div id="wdHistory">Đang tải...</div></div>
         `;
         
