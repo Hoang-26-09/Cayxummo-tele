@@ -935,19 +935,20 @@ class AdminPage {
             <div style="padding:8px;background:rgba(255,255,255,0.05);margin-top:5px;border-radius:5px;">
                 <p><b>${u.username || 'Unknown'}</b> (ID: ${id})</p>
                 <p>🪙: ${(u.balance || 0).toLocaleString()} | 🔗 ${u.completedLinks || 0} link | 👥 ${(u.friends || []).length} bạn</p>
-                <div style="display:flex;gap:8px;margin-top:5px;">
-                    <input class="input" id="editBal_${id}" placeholder="Sửa 🪙" type="number" style="margin-bottom:0;flex:1;">
+                <div style="display:flex;gap:8px;margin-top:5px;flex-wrap:wrap;">
+                    <input class="input" id="editBal_${id}" placeholder="Sửa 🪙" type="number" style="margin-bottom:0;flex:1;min-width:80px;">
                     <button class="btn-sm btn-primary editBal" data-uid="${id}">Lưu</button>
                     ${!u.isBanned ? 
                         `<button class="btn-sm btn-danger banUser" data-uid="${id}" data-username="${u.username}">🚫 Khóa</button>` :
                         `<button class="btn-sm btn-success unbanUser" data-uid="${id}" data-username="${u.username}">✅ Mở khóa</button>`
                     }
+                    <button class="btn-sm btn-danger deleteUser" data-uid="${id}" data-username="${u.username}" style="background:#d50000;">🗑️ Xóa</button>
                 </div>
             </div>
         `).join('');
         document.getElementById('userResult').innerHTML = html;
 
-        // Gắn sự kiện cho các nút
+        // Gắn sự kiện cho các nút Sửa xu, Khóa/Mở khóa
         document.querySelectorAll('.editBal').forEach(btn => {
             btn.onclick = async () => {
                 const newBal = parseInt(document.getElementById(`editBal_${btn.dataset.uid}`).value);
@@ -971,6 +972,37 @@ class AdminPage {
                 if (confirm(`Mở khóa tài khoản ${btn.dataset.username}?`)) {
                     await FB.updateUser(btn.dataset.uid, { isBanned: false });
                     this.app.toast('Đã mở khóa!', 'success');
+                    this.loadTab('users');
+                }
+            };
+        });
+
+        // ✅ Thêm sự kiện cho nút Xóa tài khoản
+        document.querySelectorAll('.deleteUser').forEach(btn => {
+            btn.onclick = async () => {
+                const confirmMsg = `Bạn có chắc muốn XÓA VĨNH VIỄN tài khoản "${btn.dataset.username}" (ID: ${btn.dataset.uid})?\n\nHành động này sẽ xóa tất cả dữ liệu liên quan và KHÔNG THỂ hoàn tác!`;
+                if (confirm(confirmMsg)) {
+                    const uid = btn.dataset.uid;
+                    // 1. Xóa user khỏi users
+                    await FB.db.ref(`users/${uid}`).remove();
+                    // 2. Xóa khỏi leaderboard
+                    await FB.db.ref(`leaderboard/${uid}`).remove();
+                    // 3. Xóa các yêu cầu rút của user
+                    const withdrawSnap = await FB.db.ref('withdraw_requests').orderByChild('userId').equalTo(uid).once('value');
+                    const updates = {};
+                    withdrawSnap.forEach(c => { updates[`withdraw_requests/${c.key}`] = null; });
+                    if (Object.keys(updates).length > 0) {
+                        await FB.db.ref().update(updates);
+                    }
+                    // 4. Ghi log admin
+                    await FB.db.ref('admin_logs').push({
+                        adminId: this.app.user.id,
+                        action: 'delete_user',
+                        deletedUserId: uid,
+                        deletedUsername: btn.dataset.username,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                    this.app.toast(`Đã xóa tài khoản ${btn.dataset.username}!`, 'success');
                     this.loadTab('users');
                 }
             };
