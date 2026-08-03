@@ -2,7 +2,7 @@
 const DEFAULT_CONFIG = {
     dailyRewards: [50, 50, 50, 50, 100, 150, 300],
     linksForChest: 5,
-    linkCooldown: 300000, // 5 phút – chỉ áp dụng giữa các lần nhập mã thành công
+    linkCooldown: 300000,
     maxCodesPerDay: 20,
     chestRewards: [50, 80, 100, 150, 200, 300, 500, 1000],
     friendRewards: { 2: 100, 5: 300, 10: 1000 },
@@ -14,7 +14,11 @@ const DEFAULT_CONFIG = {
     minWithdraw: 20000,
     maxWithdraw: 100000,
     maxWithdrawPerDay: 3,
-    exchange_rate: 10
+    exchange_rate: 10,
+    // Màu sắc mặc định
+    starColor: '#5f91ff',
+    bgColor1: '#1b2735',
+    bgColor2: '#090a0f'
 };
 
 let CONFIG = { ...DEFAULT_CONFIG };
@@ -62,7 +66,11 @@ class FirebaseManager {
             minWithdraw: saved.minWithdraw || DEFAULT_CONFIG.minWithdraw,
             maxWithdraw: saved.maxWithdraw || DEFAULT_CONFIG.maxWithdraw,
             maxWithdrawPerDay: saved.maxWithdrawPerDay || DEFAULT_CONFIG.maxWithdrawPerDay,
-            exchange_rate: saved.exchange_rate || DEFAULT_CONFIG.exchange_rate
+            exchange_rate: saved.exchange_rate || DEFAULT_CONFIG.exchange_rate,
+            // Đọc màu sắc
+            starColor: saved.starColor || DEFAULT_CONFIG.starColor,
+            bgColor1: saved.bgColor1 || DEFAULT_CONFIG.bgColor1,
+            bgColor2: saved.bgColor2 || DEFAULT_CONFIG.bgColor2
         };
     }
 
@@ -91,7 +99,7 @@ class FirebaseManager {
     }
 
     async isAdmin(uid) {
-        return uid === '5852621653' || uid === '  ';
+        return uid === '5852621653' || uid === 'test123';
     }
 
     async dailyCheckin(uid) {
@@ -107,7 +115,6 @@ class FirebaseManager {
 
     async getTasks() { return (await this.db.ref('tasks').once('value')).val() || {}; }
 
-    // Lấy link ngẫu nhiên mà user CHƯA từng vượt, và còn lượt dùng (nhưng không tăng usedCount ở đây)
     async getRandomTask(uid) {
         const tasks = await this.getTasks();
         const user = await this.getUser(uid);
@@ -123,7 +130,6 @@ class FirebaseManager {
         if (available.length === 0) return null;
 
         const [taskId, task] = available[Math.floor(Math.random() * available.length)];
-        // KHÔNG tăng usedCount ở đây nữa
         await this.updateUser(uid, { lastLinkTime: Date.now() });
         return { id: taskId, ...task };
     }
@@ -132,12 +138,12 @@ class FirebaseManager {
         const tasks = await this.getTasks();
         let task = null;
         let taskId = null;
-        for (let id in tasks) { 
-            if (tasks[id].code === code && tasks[id].active !== false) { 
-                task = tasks[id]; 
+        for (let id in tasks) {
+            if (tasks[id].code === code && tasks[id].active !== false) {
+                task = tasks[id];
                 taskId = id;
-                break; 
-            } 
+                break;
+            }
         }
         if (!task) return { status: 'invalid' };
 
@@ -155,7 +161,6 @@ class FirebaseManager {
             return { status: 'limit', message: 'Bạn đã đạt giới hạn mã hôm nay!' };
         }
 
-        // Kiểm tra tốc độ nhập mã (tool detection)
         const timeSinceLink = Date.now() - (user.lastLinkTime || 0);
         let isTool = false;
         if (user.lastLinkTime && timeSinceLink < 120000 && timeSinceLink > 0) {
@@ -171,7 +176,6 @@ class FirebaseManager {
             });
         }
 
-        // ✅ Tăng usedCount sau khi verify thành công
         if (taskId) {
             await this.db.ref(`tasks/${taskId}/usedCount`).set((task.usedCount || 0) + 1);
         }
@@ -188,7 +192,7 @@ class FirebaseManager {
             codesCountToday: codesToday + 1
         });
         await this.updateLeaderboard(uid, (user.totalLinksWeekly || 0) + 1);
-        
+
         if (isTool) {
             return { status: 'ok', reward, warning: 'Cảnh báo: Bạn đã nhập mã quá nhanh!' };
         }
@@ -257,17 +261,17 @@ class FirebaseManager {
     }
 
     async getWithdrawHistory(uid) {
-    const snap = await this.db.ref('withdraw_requests').once('value');
-    const all = snap.val() || {};
-    const arr = [];
-    for (let key in all) {
-        if (all[key].userId === uid) {
-            arr.push({ id: key, ...all[key] });
+        const snap = await this.db.ref('withdraw_requests').once('value');
+        const all = snap.val() || {};
+        const arr = [];
+        for (let key in all) {
+            if (all[key].userId === uid) {
+                arr.push({ id: key, ...all[key] });
+            }
         }
+        arr.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        return arr;
     }
-    arr.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    return arr;
-}
 
     async updateLeaderboard(uid, links) {
         const user = await this.getUser(uid);
@@ -296,50 +300,32 @@ class FirebaseManager {
         return { totalUsers, totalBalance, totalLinks, prizeFund: fund, pendingWithdraws: pending };
     }
 
-    // Lấy thời gian còn lại đến 8h Chủ nhật tới
     getTimeUntilSunday8AM() {
         const now = new Date();
-        const dayOfWeek = now.getDay(); // 0 = Chủ nhật
+        const dayOfWeek = now.getDay();
         let daysUntilSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek;
-        
         const nextSunday = new Date(now);
         nextSunday.setDate(now.getDate() + daysUntilSunday);
         nextSunday.setHours(8, 0, 0, 0);
-        
-        // Nếu hôm nay là Chủ nhật và đã qua 8h, lấy Chủ nhật tuần sau
         if (dayOfWeek === 0 && now >= nextSunday) {
             nextSunday.setDate(nextSunday.getDate() + 7);
         }
-        
         return nextSunday.getTime() - now.getTime();
     }
 
-    // Tự động phát thưởng BXH (gọi mỗi khi load BXH, hoặc dùng Cloud Functions)
     async checkAndDistributeRewards() {
         const timeUntil = this.getTimeUntilSunday8AM();
-        // Nếu còn hơn 1 phút thì không làm gì
         if (timeUntil > 60000) return;
-        
-        // Kiểm tra xem tuần này đã phát thưởng chưa
         const lastResetSnap = await this.db.ref('leaderboard_config/lastReset').once('value');
         const lastReset = lastResetSnap.val() || '';
         const thisWeek = this.getWeekNumber();
-        
-        if (lastReset === thisWeek) return; // Đã phát thưởng tuần này rồi
-        
-        // Lấy top 10
+        if (lastReset === thisWeek) return;
         const top10 = await this.getTopLinks(10);
         if (top10.length === 0) return;
-        
-        // Lấy quỹ
         const fundSnap = await this.db.ref('prize_fund').once('value');
         let fund = fundSnap.val() || 0;
         if (fund <= 0) return;
-        
-        // Tỉ lệ chia thưởng: 40%, 25%, 15%, 10%, 5%, 3%, 2%, 0%, 0%, 0%
         const ratios = [0.40, 0.25, 0.15, 0.10, 0.05, 0.03, 0.02, 0, 0, 0];
-        
-        // Phát thưởng
         const updates = {};
         let totalDistributed = 0;
         top10.forEach((user, i) => {
@@ -351,23 +337,17 @@ class FirebaseManager {
                 }
             }
         });
-        
         if (totalDistributed > 0) {
             await this.db.ref().update(updates);
-            // Trừ quỹ
             await this.db.ref('prize_fund').set(Math.max(0, fund - totalDistributed));
-            // Đánh dấu đã phát thưởng tuần này
             await this.db.ref('leaderboard_config/lastReset').set(thisWeek);
-            // Reset leaderboard
             await this.db.ref('leaderboard').remove();
-            // Reset totalLinksWeekly cho tất cả users
             const usersSnap = await this.db.ref('users').once('value');
             const userUpdates = {};
             usersSnap.forEach(child => {
                 userUpdates[`${child.key}/totalLinksWeekly`] = 0;
             });
             await this.db.ref().update(userUpdates);
-            console.log(`Đã phát thưởng BXH: ${totalDistributed} 🪙`);
         }
     }
 
@@ -411,7 +391,6 @@ class TasksPage {
         const completedLinks = this.userData.completedLinks || 0;
         const progress = completedLinks % CONFIG.linksForChest;
         const isReady = completedLinks >= CONFIG.linksForChest && progress === 0;
-        // 🔥 Đồng bộ cooldown: dùng lastCodeTime (thời điểm nhập mã thành công)
         const cooldown = this.userData.lastCodeTime ? Math.max(0, CONFIG.linkCooldown - (Date.now() - this.userData.lastCodeTime)) : 0;
         const isCooldown = cooldown > 0;
         this.container.innerHTML = `
@@ -488,11 +467,9 @@ class FriendsPage {
 class LeaderboardPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     async render() {
-        // 👉 SỬA: Clear interval cũ trước khi tạo mới
         if (this.countdownInterval) {
             clearInterval(this.countdownInterval);
         }
-        // Kiểm tra và phát thưởng nếu đến giờ
         await FB.checkAndDistributeRewards();
         
         const top = await FB.getTopLinks(10);
@@ -500,7 +477,6 @@ class LeaderboardPage {
         const fund = fundSnap.val() || 0;
         const timeUntil = FB.getTimeUntilSunday8AM();
         
-        // Format thời gian đếm ngược
         const days = Math.floor(timeUntil / 86400000);
         const hours = Math.floor((timeUntil % 86400000) / 3600000);
         const minutes = Math.floor((timeUntil % 3600000) / 60000);
@@ -529,7 +505,6 @@ class LeaderboardPage {
             </div>
         `;
         
-        // Cập nhật đồng hồ đếm ngược mỗi giây
         this.countdownInterval = setInterval(() => {
             const timeEl = document.querySelector('.countdown-timer');
             if (!timeEl) { clearInterval(this.countdownInterval); return; }
@@ -576,9 +551,8 @@ class AccountPage {
             <div class="card"><div class="card-title">📜 Lịch sử rút</div><div id="wdHistory">Đang tải...</div></div>
         `;
         
-        // Nút Group Code
         document.getElementById('btnJoinCodeGroup').onclick = () => {
-            const link = 'https://t.me/CodeXummo'; // Thay bằng link thật
+            const link = 'https://t.me/CodeXummo';
             if (this.app.tg) {
                 this.app.tg.openLink(link);
             } else {
@@ -586,9 +560,8 @@ class AccountPage {
             }
         };
 
-        // Nút Group Thông báo
         document.getElementById('btnJoinNotifyGroup').onclick = () => {
-            const link = 'https://t.me/Cayxummo'; // Thay bằng link thật
+            const link = 'https://t.me/Cayxummo';
             if (this.app.tg) {
                 this.app.tg.openLink(link);
             } else {
@@ -656,6 +629,7 @@ class AdminPage {
                 <button class="admin-tab" data-tab="notify">📢 Thông báo</button>
                 <button class="admin-tab" data-tab="logs">📝 Log</button>
                 <button class="admin-tab" data-tab="security">🛡️ Bảo mật</button>
+                <button class="admin-tab" data-tab="theme">🎨 Giao diện</button>
             </div>
             <div id="adminTabContent"></div>
         `;
@@ -716,7 +690,6 @@ class AdminPage {
                 };
                 await FB.db.ref('admin_config').set(newConfig);
                 await FB.loadConfig();
-                // ✅ Ghi log
                 await FB.db.ref('admin_logs').push({
                     adminId: this.app.user.id,
                     action: 'save_config',
@@ -739,7 +712,6 @@ class AdminPage {
                 const add = parseInt(document.getElementById('fundAdd').value) || 0;
                 if (add <= 0) return this.app.toast('Nhập số 🪙!', 'warning');
                 await FB.db.ref('prize_fund').set(fund + add);
-                // ✅ Ghi log
                 await FB.db.ref('admin_logs').push({
                     adminId: this.app.user.id,
                     action: 'add_fund',
@@ -760,7 +732,6 @@ class AdminPage {
                 const maxUses = parseInt(document.getElementById('taskMaxUses').value) || 3;
                 if (!link || !code) return this.app.toast('Nhập đủ!', 'warning');
                 await FB.db.ref('tasks').push({ link, code, reward, active: true, maxUses: maxUses, usedCount: 0 });
-                // ✅ Ghi log
                 await FB.db.ref('admin_logs').push({
                     adminId: this.app.user.id,
                     action: 'add_task',
@@ -774,7 +745,6 @@ class AdminPage {
                 btn.onclick = async () => {
                     const taskId = btn.dataset.id;
                     await FB.db.ref(`tasks/${taskId}`).remove();
-                    // ✅ Ghi log
                     await FB.db.ref('admin_logs').push({
                         adminId: this.app.user.id,
                         action: 'delete_task',
@@ -797,7 +767,6 @@ class AdminPage {
                 const expiry = document.getElementById('giftExpiry').value;
                 if (!name) return this.app.toast('Nhập tên!', 'warning');
                 await FB.db.ref(`gift_codes/${name}`).set({ reward, maxUses, usedCount: 0, expiry: expiry ? new Date(expiry).getTime() : null, active: true });
-                // ✅ Ghi log
                 await FB.db.ref('admin_logs').push({
                     adminId: this.app.user.id,
                     action: 'create_gift',
@@ -812,7 +781,6 @@ class AdminPage {
                 btn.onclick = async () => {
                     const code = btn.dataset.code;
                     await FB.db.ref(`gift_codes/${code}`).remove();
-                    // ✅ Ghi log
                     await FB.db.ref('admin_logs').push({
                         adminId: this.app.user.id,
                         action: 'delete_gift',
@@ -830,7 +798,6 @@ class AdminPage {
             wSnap.forEach(c => {
                 withdraws.push({ id: c.key, ...c.val() });
             });
-            // Sắp xếp giảm dần theo createdAt (nếu có)
             withdraws.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
             content.innerHTML = `<h3>💸 Rút 🪙 (Tất cả: ${withdraws.length})</h3>
                 <div style="display:flex;gap:8px;margin-bottom:12px;">
@@ -867,7 +834,6 @@ class AdminPage {
                     await FB.db.ref(`withdraw_requests/${id}`).update({
                         status: 'approved', reviewedBy: this.app.user.username, reviewedAt: firebase.database.ServerValue.TIMESTAMP
                     });
-                    // ✅ Ghi log
                     await FB.db.ref('admin_logs').push({
                         adminId: this.app.user.id,
                         action: 'approve_withdraw',
@@ -890,7 +856,6 @@ class AdminPage {
                     await FB.db.ref(`withdraw_requests/${id}`).update({
                         status: 'rejected', reviewedBy: this.app.user.username, reviewedAt: firebase.database.ServerValue.TIMESTAMP, rejectReason: reason || ''
                     });
-                    // ✅ Ghi log
                     await FB.db.ref('admin_logs').push({
                         adminId: this.app.user.id,
                         action: 'reject_withdraw',
@@ -905,146 +870,136 @@ class AdminPage {
             });
         }
         else if (tab === 'users') {
-    content.innerHTML = `
-        <h3>👥 Users</h3>
-        <div style="display:flex;gap:8px;margin-bottom:12px;">
-            <input class="input" id="searchUser" placeholder="Tìm ID hoặc username..." style="margin-bottom:0;">
-            <button class="btn btn-sm btn-primary" id="searchBtn">🔍 Tìm</button>
-        </div>
-        <div id="userResult">Đang tải danh sách...</div>
-        <div id="pagination" style="display:flex;gap:4px;margin-top:12px;flex-wrap:wrap;justify-content:center;"></div>
-    `;
-
-    const ITEMS_PER_PAGE = 50;
-    let allUsers = [];
-    let currentPage = 1;
-    let filteredUsers = null;
-
-    const renderUsers = (usersArr) => {
-        const start = (currentPage - 1) * ITEMS_PER_PAGE;
-        const end = start + ITEMS_PER_PAGE;
-        const pageUsers = usersArr.slice(start, end);
-
-        if (pageUsers.length === 0) {
-            document.getElementById('userResult').innerHTML = '<p style="text-align:center;color:var(--text2);">Không có người dùng nào</p>';
-            document.getElementById('pagination').innerHTML = '';
-            return;
-        }
-
-        const html = pageUsers.map(([id, u]) => `
-            <div style="padding:8px;background:rgba(255,255,255,0.05);margin-top:5px;border-radius:5px;">
-                <p><b>${u.username || 'Unknown'}</b> (ID: ${id})</p>
-                <p>🪙: ${(u.balance || 0).toLocaleString()} | 🔗 ${u.completedLinks || 0} link | 👥 ${(u.friends || []).length} bạn</p>
-                <div style="display:flex;gap:8px;margin-top:5px;flex-wrap:wrap;">
-                    <input class="input" id="editBal_${id}" placeholder="Sửa 🪙" type="number" style="margin-bottom:0;flex:1;min-width:80px;">
-                    <button class="btn-sm btn-primary editBal" data-uid="${id}">Lưu</button>
-                    ${!u.isBanned ? 
-                        `<button class="btn-sm btn-danger banUser" data-uid="${id}" data-username="${u.username}">🚫 Khóa</button>` :
-                        `<button class="btn-sm btn-success unbanUser" data-uid="${id}" data-username="${u.username}">✅ Mở khóa</button>`
-                    }
-                    <button class="btn-sm btn-danger deleteUser" data-uid="${id}" data-username="${u.username}" style="background:#d50000;">🗑️ Xóa</button>
+            content.innerHTML = `
+                <h3>👥 Users</h3>
+                <div style="display:flex;gap:8px;margin-bottom:12px;">
+                    <input class="input" id="searchUser" placeholder="Tìm ID hoặc username..." style="margin-bottom:0;">
+                    <button class="btn btn-sm btn-primary" id="searchBtn">🔍 Tìm</button>
                 </div>
-            </div>
-        `).join('');
-        document.getElementById('userResult').innerHTML = html;
+                <div id="userResult">Đang tải danh sách...</div>
+                <div id="pagination" style="display:flex;gap:4px;margin-top:12px;flex-wrap:wrap;justify-content:center;"></div>
+            `;
 
-        // Gắn sự kiện cho các nút Sửa xu, Khóa/Mở khóa
-        document.querySelectorAll('.editBal').forEach(btn => {
-            btn.onclick = async () => {
-                const newBal = parseInt(document.getElementById(`editBal_${btn.dataset.uid}`).value);
-                if (isNaN(newBal)) return;
-                await FB.updateUser(btn.dataset.uid, { balance: newBal });
-                this.app.toast('Đã cập nhật!', 'success');
-                this.loadTab('users');
-            };
-        });
-        document.querySelectorAll('.banUser').forEach(btn => {
-            btn.onclick = async () => {
-                if (confirm(`Khóa tài khoản ${btn.dataset.username}?`)) {
-                    await FB.updateUser(btn.dataset.uid, { isBanned: true });
-                    this.app.toast('Đã khóa!', 'success');
-                    this.loadTab('users');
+            const ITEMS_PER_PAGE = 50;
+            let allUsers = [];
+            let currentPage = 1;
+            let filteredUsers = null;
+
+            const renderUsers = (usersArr) => {
+                const start = (currentPage - 1) * ITEMS_PER_PAGE;
+                const end = start + ITEMS_PER_PAGE;
+                const pageUsers = usersArr.slice(start, end);
+
+                if (pageUsers.length === 0) {
+                    document.getElementById('userResult').innerHTML = '<p style="text-align:center;color:var(--text2);">Không có người dùng nào</p>';
+                    document.getElementById('pagination').innerHTML = '';
+                    return;
                 }
-            };
-        });
-        document.querySelectorAll('.unbanUser').forEach(btn => {
-            btn.onclick = async () => {
-                if (confirm(`Mở khóa tài khoản ${btn.dataset.username}?`)) {
-                    await FB.updateUser(btn.dataset.uid, { isBanned: false });
-                    this.app.toast('Đã mở khóa!', 'success');
-                    this.loadTab('users');
+
+                const html = pageUsers.map(([id, u]) => `
+                    <div style="padding:8px;background:rgba(255,255,255,0.05);margin-top:5px;border-radius:5px;">
+                        <p><b>${u.username || 'Unknown'}</b> (ID: ${id})</p>
+                        <p>🪙: ${(u.balance || 0).toLocaleString()} | 🔗 ${u.completedLinks || 0} link | 👥 ${(u.friends || []).length} bạn</p>
+                        <div style="display:flex;gap:8px;margin-top:5px;flex-wrap:wrap;">
+                            <input class="input" id="editBal_${id}" placeholder="Sửa 🪙" type="number" style="margin-bottom:0;flex:1;min-width:80px;">
+                            <button class="btn-sm btn-primary editBal" data-uid="${id}">Lưu</button>
+                            ${!u.isBanned ? 
+                                `<button class="btn-sm btn-danger banUser" data-uid="${id}" data-username="${u.username}">🚫 Khóa</button>` :
+                                `<button class="btn-sm btn-success unbanUser" data-uid="${id}" data-username="${u.username}">✅ Mở khóa</button>`
+                            }
+                            <button class="btn-sm btn-danger deleteUser" data-uid="${id}" data-username="${u.username}" style="background:#d50000;">🗑️ Xóa</button>
+                        </div>
+                    </div>
+                `).join('');
+                document.getElementById('userResult').innerHTML = html;
+
+                document.querySelectorAll('.editBal').forEach(btn => {
+                    btn.onclick = async () => {
+                        const newBal = parseInt(document.getElementById(`editBal_${btn.dataset.uid}`).value);
+                        if (isNaN(newBal)) return;
+                        await FB.updateUser(btn.dataset.uid, { balance: newBal });
+                        this.app.toast('Đã cập nhật!', 'success');
+                        this.loadTab('users');
+                    };
+                });
+                document.querySelectorAll('.banUser').forEach(btn => {
+                    btn.onclick = async () => {
+                        if (confirm(`Khóa tài khoản ${btn.dataset.username}?`)) {
+                            await FB.updateUser(btn.dataset.uid, { isBanned: true });
+                            this.app.toast('Đã khóa!', 'success');
+                            this.loadTab('users');
+                        }
+                    };
+                });
+                document.querySelectorAll('.unbanUser').forEach(btn => {
+                    btn.onclick = async () => {
+                        if (confirm(`Mở khóa tài khoản ${btn.dataset.username}?`)) {
+                            await FB.updateUser(btn.dataset.uid, { isBanned: false });
+                            this.app.toast('Đã mở khóa!', 'success');
+                            this.loadTab('users');
+                        }
+                    };
+                });
+                document.querySelectorAll('.deleteUser').forEach(btn => {
+                    btn.onclick = async () => {
+                        const confirmMsg = `Bạn có chắc muốn XÓA VĨNH VIỄN tài khoản "${btn.dataset.username}" (ID: ${btn.dataset.uid})?\n\nHành động này sẽ xóa tất cả dữ liệu liên quan và KHÔNG THỂ hoàn tác!`;
+                        if (confirm(confirmMsg)) {
+                            const uid = btn.dataset.uid;
+                            await FB.db.ref(`users/${uid}`).remove();
+                            await FB.db.ref(`leaderboard/${uid}`).remove();
+                            const withdrawSnap = await FB.db.ref('withdraw_requests').orderByChild('userId').equalTo(uid).once('value');
+                            const updates = {};
+                            withdrawSnap.forEach(c => { updates[`withdraw_requests/${c.key}`] = null; });
+                            if (Object.keys(updates).length > 0) {
+                                await FB.db.ref().update(updates);
+                            }
+                            await FB.db.ref('admin_logs').push({
+                                adminId: this.app.user.id,
+                                action: 'delete_user',
+                                deletedUserId: uid,
+                                deletedUsername: btn.dataset.username,
+                                timestamp: firebase.database.ServerValue.TIMESTAMP
+                            });
+                            this.app.toast(`Đã xóa tài khoản ${btn.dataset.username}!`, 'success');
+                            this.loadTab('users');
+                        }
+                    };
+                });
+
+                const totalPages = Math.ceil(usersArr.length / ITEMS_PER_PAGE);
+                let pagHTML = '';
+                for (let i = 1; i <= totalPages; i++) {
+                    pagHTML += `<button class="btn btn-sm ${i === currentPage ? 'btn-primary' : ''}" style="width:auto;padding:6px 10px;" data-page="${i}">${i}</button>`;
                 }
+                document.getElementById('pagination').innerHTML = pagHTML;
+                document.querySelectorAll('#pagination button').forEach(btn => {
+                    btn.onclick = () => {
+                        currentPage = parseInt(btn.dataset.page);
+                        renderUsers(filteredUsers || allUsers);
+                    };
+                });
             };
-        });
 
-        // ✅ Thêm sự kiện cho nút Xóa tài khoản
-        document.querySelectorAll('.deleteUser').forEach(btn => {
-            btn.onclick = async () => {
-                const confirmMsg = `Bạn có chắc muốn XÓA VĨNH VIỄN tài khoản "${btn.dataset.username}" (ID: ${btn.dataset.uid})?\n\nHành động này sẽ xóa tất cả dữ liệu liên quan và KHÔNG THỂ hoàn tác!`;
-                if (confirm(confirmMsg)) {
-                    const uid = btn.dataset.uid;
-                    // 1. Xóa user khỏi users
-                    await FB.db.ref(`users/${uid}`).remove();
-                    // 2. Xóa khỏi leaderboard
-                    await FB.db.ref(`leaderboard/${uid}`).remove();
-                    // 3. Xóa các yêu cầu rút của user
-                    const withdrawSnap = await FB.db.ref('withdraw_requests').orderByChild('userId').equalTo(uid).once('value');
-                    const updates = {};
-                    withdrawSnap.forEach(c => { updates[`withdraw_requests/${c.key}`] = null; });
-                    if (Object.keys(updates).length > 0) {
-                        await FB.db.ref().update(updates);
-                    }
-                    // 4. Ghi log admin
-                    await FB.db.ref('admin_logs').push({
-                        adminId: this.app.user.id,
-                        action: 'delete_user',
-                        deletedUserId: uid,
-                        deletedUsername: btn.dataset.username,
-                        timestamp: firebase.database.ServerValue.TIMESTAMP
-                    });
-                    this.app.toast(`Đã xóa tài khoản ${btn.dataset.username}!`, 'success');
-                    this.loadTab('users');
-                }
-            };
-        });
-
-        // Render phân trang
-        const totalPages = Math.ceil(usersArr.length / ITEMS_PER_PAGE);
-        let pagHTML = '';
-        for (let i = 1; i <= totalPages; i++) {
-            pagHTML += `<button class="btn btn-sm ${i === currentPage ? 'btn-primary' : ''}" style="width:auto;padding:6px 10px;" data-page="${i}">${i}</button>`;
-        }
-        document.getElementById('pagination').innerHTML = pagHTML;
-        document.querySelectorAll('#pagination button').forEach(btn => {
-            btn.onclick = () => {
-                currentPage = parseInt(btn.dataset.page);
-                renderUsers(filteredUsers || allUsers);
-            };
-        });
-    };
-
-    // Load toàn bộ users
-    const snap = await FB.db.ref('users').once('value');
-    allUsers = Object.entries(snap.val() || {}).sort((a, b) => (b[1].balance || 0) - (a[1].balance || 0));
-    renderUsers(allUsers);
-
-    // Tìm kiếm
-    document.getElementById('searchBtn').onclick = async () => {
-        const keyword = document.getElementById('searchUser').value.trim().toLowerCase();
-        if (!keyword) {
-            filteredUsers = null;
-            currentPage = 1;
+            const snap = await FB.db.ref('users').once('value');
+            allUsers = Object.entries(snap.val() || {}).sort((a, b) => (b[1].balance || 0) - (a[1].balance || 0));
             renderUsers(allUsers);
-            return;
+
+            document.getElementById('searchBtn').onclick = async () => {
+                const keyword = document.getElementById('searchUser').value.trim().toLowerCase();
+                if (!keyword) {
+                    filteredUsers = null;
+                    currentPage = 1;
+                    renderUsers(allUsers);
+                    return;
+                }
+                const filtered = allUsers.filter(([id, u]) => 
+                    id.includes(keyword) || (u.username || '').toLowerCase().includes(keyword)
+                );
+                filteredUsers = filtered;
+                currentPage = 1;
+                renderUsers(filtered);
+            };
         }
-        const filtered = allUsers.filter(([id, u]) => 
-            id.includes(keyword) || (u.username || '').toLowerCase().includes(keyword)
-        );
-        filteredUsers = filtered;
-        currentPage = 1;
-        renderUsers(filtered);
-    };
-}
         else if (tab === 'leaderboard') {
             const topLinks = await FB.getTopLinks(10);
             const topFriends = await FB.getTopFriends(10);
@@ -1064,7 +1019,6 @@ class AdminPage {
                 const msg = document.getElementById('notifyMsg').value.trim();
                 if (!msg) return this.app.toast('Nhập nội dung!', 'warning');
                 await FB.db.ref('notifications').push({ message: msg, sentBy: this.app.user.username, timestamp: firebase.database.ServerValue.TIMESTAMP });
-                // ✅ Ghi log
                 await FB.db.ref('admin_logs').push({
                     adminId: this.app.user.id,
                     action: 'send_notification',
@@ -1091,6 +1045,77 @@ class AdminPage {
             content.innerHTML = `<h3>🛡️ Cảnh báo bảo mật</h3>${alerts.map(a => `<div style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><p><b>${a.type}</b> - ${a.username} (${a.userId})</p><p style="font-size:11px;">${new Date(a.timestamp).toLocaleString('vi-VN')}</p>${a.status==='unread' ? `<button class="btn-sm btn-warning" data-id="${a.id}">Đã xem</button>` : ''}</div>`).join('') || '<p>Không có cảnh báo</p>'}`;
             document.querySelectorAll('.btn-warning').forEach(btn => btn.onclick = async () => { await FB.db.ref(`admin_alerts/${btn.dataset.id}/status`).set('reviewed'); this.loadTab('security'); });
         }
+        else if (tab === 'theme') {
+            const configSnap = await FB.db.ref('admin_config').once('value');
+            const config = configSnap.val() || {};
+            const starColor = config.starColor || CONFIG.starColor;
+            const bgColor1 = config.bgColor1 || CONFIG.bgColor1;
+            const bgColor2 = config.bgColor2 || CONFIG.bgColor2;
+
+            content.innerHTML = `
+                <div class="card">
+                    <div class="card-title">🌟 Màu sao băng</div>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input type="color" id="cfgStarColorPicker" value="${starColor}" style="width:50px;height:40px;border:none;cursor:pointer;">
+                        <input class="input" id="cfgStarColorHex" placeholder="Nhập mã hex (VD: #ff0000)" value="${starColor}" style="flex:1;">
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">🌌 Màu nền (Gradient)</div>
+                    <label class="input-label">Màu trên cùng:</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input type="color" id="cfgBgColor1Picker" value="${bgColor1}" style="width:50px;height:40px;border:none;cursor:pointer;">
+                        <input class="input" id="cfgBgColor1Hex" placeholder="Nhập mã hex" value="${bgColor1}" style="flex:1;">
+                    </div>
+                    <label class="input-label">Màu dưới cùng:</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input type="color" id="cfgBgColor2Picker" value="${bgColor2}" style="width:50px;height:40px;border:none;cursor:pointer;">
+                        <input class="input" id="cfgBgColor2Hex" placeholder="Nhập mã hex" value="${bgColor2}" style="flex:1;">
+                    </div>
+                </div>
+                <button class="btn btn-primary" id="saveTheme">💾 Lưu giao diện</button>
+                <p style="font-size:12px;color:var(--text2);margin-top:8px;">⚠️ Áp dụng ngay sau khi lưu.</p>
+            `;
+
+            const syncColor = (pickerId, hexId) => {
+                const picker = document.getElementById(pickerId);
+                const hex = document.getElementById(hexId);
+                picker.addEventListener('input', () => { hex.value = picker.value; });
+                hex.addEventListener('input', () => { if (/^#[0-9A-Fa-f]{6}$/.test(hex.value)) picker.value = hex.value; });
+            };
+            syncColor('cfgStarColorPicker', 'cfgStarColorHex');
+            syncColor('cfgBgColor1Picker', 'cfgBgColor1Hex');
+            syncColor('cfgBgColor2Picker', 'cfgBgColor2Hex');
+
+            document.getElementById('saveTheme').onclick = async () => {
+                const newStarColor = document.getElementById('cfgStarColorHex').value.trim() || document.getElementById('cfgStarColorPicker').value;
+                const newBgColor1 = document.getElementById('cfgBgColor1Hex').value.trim() || document.getElementById('cfgBgColor1Picker').value;
+                const newBgColor2 = document.getElementById('cfgBgColor2Hex').value.trim() || document.getElementById('cfgBgColor2Picker').value;
+
+                const hexRegex = /^#[0-9A-Fa-f]{6}$/;
+                if (!hexRegex.test(newStarColor) || !hexRegex.test(newBgColor1) || !hexRegex.test(newBgColor2)) {
+                    this.app.toast('Mã màu không hợp lệ! Hãy nhập đúng định dạng #RRGGBB', 'error');
+                    return;
+                }
+
+                await FB.db.ref('admin_config').update({
+                    starColor: newStarColor,
+                    bgColor1: newBgColor1,
+                    bgColor2: newBgColor2
+                });
+                await FB.loadConfig();
+                this.app.applyTheme();
+
+                await FB.db.ref('admin_logs').push({
+                    adminId: this.app.user.id,
+                    action: 'save_theme',
+                    details: { starColor: newStarColor, bgColor1: newBgColor1, bgColor2: newBgColor2 },
+                    timestamp: firebase.database.ServerValue.TIMESTAMP
+                });
+                this.app.toast('Đã lưu giao diện!', 'success');
+                this.loadTab('theme');
+            };
+        }
     }
 }
 
@@ -1109,7 +1134,6 @@ class CayXumMo {
             await FB.createUser(this.user.id, this.user); this.isAdmin = await FB.isAdmin(this.user.id);
             document.getElementById('loadingScreen').style.display = 'none'; document.getElementById('app').style.display = 'flex';
             this.setupNav(); this.loadPage('home'); this.refreshUserBar();
-            // 👉 SỬA: Realtime listener cho thông báo
             FB.db.ref("notifications").orderByChild("timestamp").limitToLast(20).on("value", snap => {
                 const arr = [];
                 snap.forEach(c => { arr.push(c.val()); });
@@ -1128,6 +1152,7 @@ class CayXumMo {
                 }
             });
             document.getElementById('btnNotifications').onclick = () => this.showNotifications();
+            this.applyTheme(); // Áp dụng màu sắc
         } catch (e) { document.getElementById('loadingScreen').innerHTML = `<div style="color:red;padding:20px;"><h3>❌ Lỗi khởi tạo:</h3><p>${e.message}</p></div>`; }
     }
     setupNav() {
@@ -1146,7 +1171,32 @@ class CayXumMo {
     async refreshUserBar() { const userData = await FB.getUser(this.user.id); document.getElementById('userBar').innerHTML = `<span>👤 ${userData.username}${this.isAdmin ? ' <span style="background:#ffd700;color:#000;padding:2px 8px;border-radius:10px;font-size:10px;">ADMIN</span>' : ''}</span><span>🪙 ${(userData.balance||0).toLocaleString()}</span>`; }
     toast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = `toast toast-${type} show`; setTimeout(() => t.classList.remove('show'), 2500); }
 
-    // 👉 SỬA: loadNotifications đã được thay bằng realtime listener, xóa phương thức này nếu có
+    // ✅ Hàm áp dụng màu sắc
+    applyTheme() {
+        const starColor = CONFIG.starColor || DEFAULT_CONFIG.starColor;
+        const bgColor1 = CONFIG.bgColor1 || DEFAULT_CONFIG.bgColor1;
+        const bgColor2 = CONFIG.bgColor2 || DEFAULT_CONFIG.bgColor2;
+
+        document.body.style.background = `radial-gradient(ellipse at bottom, ${bgColor1} 0%, ${bgColor2} 100%)`;
+
+        let styleEl = document.getElementById('dynamic-theme');
+        if (!styleEl) {
+            styleEl = document.createElement('style');
+            styleEl.id = 'dynamic-theme';
+            document.head.appendChild(styleEl);
+        }
+        styleEl.textContent = `
+            .shooting_star {
+                background: linear-gradient(-45deg, ${starColor}, rgba(0, 0, 255, 0)) !important;
+                filter: drop-shadow(0 0 6px ${starColor}) !important;
+            }
+            .shooting_star::before,
+            .shooting_star::after {
+                background: linear-gradient(-45deg, rgba(0, 0, 255, 0), ${starColor}, rgba(0, 0, 255, 0)) !important;
+            }
+        `;
+    }
+
     showNotifications() {
         localStorage.setItem('lastSeenNotify', Date.now());
         document.getElementById('notifyBadge').style.display = 'none';
