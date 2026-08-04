@@ -41,6 +41,29 @@ window.onerror = function(msg, url, line) {
         `<div style="color:red;padding:20px;"><h3>❌ Lỗi JavaScript:</h3><p>${msg}</p><p>Dòng: ${line}</p></div>`;
 };
 
+// ==================== RATE LIMITER (THÊM MỚI) ====================
+class RateLimiter {
+    constructor() {
+        this.requests = new Map();
+    }
+
+    check(key, maxRequests = 10, timeWindow = 60000) {
+        const now = Date.now();
+        if (!this.requests.has(key)) {
+            this.requests.set(key, []);
+        }
+        const timestamps = this.requests.get(key);
+        const valid = timestamps.filter(t => now - t < timeWindow);
+        if (valid.length >= maxRequests) {
+            return false;
+        }
+        valid.push(now);
+        this.requests.set(key, valid);
+        return true;
+    }
+}
+const rateLimiter = new RateLimiter();
+
 // ==================== FIREBASE MANAGER ====================
 class FirebaseManager {
     constructor() {
@@ -83,14 +106,17 @@ class FirebaseManager {
                 dailyStreak: 0, lastDaily: '', completedLinks: 0,
                 totalLinksWeekly: 0, totalLinksAllTime: 0,
                 friends: [], invitedBy: '', codesUsed: [], giftCodesUsed: [],
-                lastLinkTime: 0, chestsOpened: 0, isBanned: false, createdAt: Date.now()
+                lastLinkTime: 0, chestsOpened: 0, isBanned: false, createdAt: Date.now(),
+                friendsCount: 0 // THÊM MỚI
             });
         }
         return (await ref.once('value')).val();
     }
 
     async getUser(uid) { return (await this.db.ref('users/' + uid).once('value')).val(); }
-    async updateUser(uid, data) { await this.db.ref('users/' + uid).update(data); }
+    async updateUser(uid, data) { 
+        await this.db.ref('users/' + uid).update(data); 
+    }
 
     async addBalance(uid, amount) {
         const ref = this.db.ref('users/' + uid + '/balance');
@@ -135,6 +161,11 @@ class FirebaseManager {
     }
 
     async verifyCode(uid, code) {
+        // THÊM RATE LIMITING
+        if (!rateLimiter.check(`verify_${uid}`, 5, 60000)) {
+            return { status: 'error', message: 'Bạn đã gửi quá nhiều yêu cầu, vui lòng đợi!' };
+        }
+
         const tasks = await this.getTasks();
         let task = null;
         let taskId = null;
@@ -201,25 +232,35 @@ class FirebaseManager {
 
     async openChest(uid) {
         const user = await this.getUser(uid);
-        const progress = (user.completedLinks || 0) % CONFIG.linksForChest;
-        const isReady = (user.completedLinks || 0) >= CONFIG.linksForChest && progress === 0;
-        if (!isReady) return { status: 'error', message: 'Chưa đủ link!' };
+        // SỬA LỖI RƯƠNG - TÍNH ĐÚNG SỐ RƯƠNG CÓ THỂ MỞ
+        const completedLinks = user.completedLinks || 0;
+        const chestsCanOpen = Math.floor(completedLinks / CONFIG.linksForChest);
+        
+        if (chestsCanOpen === 0) {
+            return { status: 'error', message: 'Chưa đủ link để mở rương!' };
+        }
+        
         const reward = CONFIG.chestRewards[Math.floor(Math.random() * CONFIG.chestRewards.length)];
         await this.updateUser(uid, {
             balance: (user.balance || 0) + reward,
             chestsOpened: (user.chestsOpened || 0) + 1,
-            completedLinks: (user.completedLinks || 0) - CONFIG.linksForChest
+            completedLinks: completedLinks - CONFIG.linksForChest
         });
         return { status: 'ok', reward };
     }
 
     async addFriend(uid, friendId) {
-        if (uid === friendId) return { status: 'error' };
+        if (uid === friendId) return { status: 'error', message: 'Không thể tự mời chính mình!' };
+        
+        // THÊM KIỂM TRA BẠN CÓ TỒN TẠI KHÔNG
+        const friendData = await this.getUser(friendId);
+        if (!friendData) return { status: 'error', message: 'Người dùng không tồn tại!' };
+        
         const user = await this.getUser(uid);
         const friends = user.friends || [];
         if (friends.includes(friendId)) return { status: 'already' };
         friends.push(friendId);
-        await this.updateUser(uid, { friends });
+        await this.updateUser(uid, { friends, friendsCount: friends.length });
         let bonus = 0;
         for (let [k, v] of Object.entries(CONFIG.friendRewards)) {
             if (friends.length === parseInt(k)) { bonus = v; break; }
@@ -284,9 +325,18 @@ class FirebaseManager {
     }
 
     async getTopFriends(limit = 10) {
-        const snap = await this.db.ref('users').once('value');
-        const arr = []; snap.forEach(c => { const u = c.val(); arr.push({ userId: c.key, username: u.username, friends: (u.friends || []).length }); });
-        arr.sort((a, b) => b.friends - a.friends); return arr.slice(0, limit);
+        // SỬA - CHỈ TẢI TOP 10 THAY VÌ TẤT CẢ
+        const snap = await this.db.ref('users').orderByChild('friendsCount').limitToLast(limit).once('value');
+        const arr = []; 
+        snap.forEach(c => { 
+            const u = c.val(); 
+            arr.push({ 
+                userId: c.key, 
+                username: u.username, 
+                friends: (u.friends || []).length 
+            }); 
+        });
+        return arr.reverse();
     }
 
     async getDashboard() {
@@ -371,17 +421,29 @@ class HomePage {
             dailyHTML += `<div class="daily-item ${cls}"><div class="day">Ngày ${i}</div><div class="reward">+${CONFIG.dailyRewards[i-1]} 🪙</div>${i<=streak?'✅':''}</div>`;
         }
         dailyHTML += '</div>';
+        const hasChecked = u.lastDaily === new Date().toDateString();
         this.container.innerHTML = `
-            <div class="card"><div class="card-title">📅 Điểm danh hàng ngày</div>${dailyHTML}<button class="btn btn-gold" id="btnDaily">${u.lastDaily===new Date().toDateString()?'✅ Đã điểm danh':'🎁 Điểm danh nhận thưởng'}</button></div>
+            <div class="card"><div class="card-title">📅 Điểm danh hàng ngày</div>${dailyHTML}<button class="btn btn-gold" id="btnDaily" ${hasChecked ? 'disabled' : ''}>${hasChecked ? '✅ Đã điểm danh' : '🎁 Điểm danh nhận thưởng'}</button></div>
             <div class="card"><div class="card-title">📊 Thống kê của bạn</div><div class="grid-2"><div class="stat-card"><div class="stat-icon">🔗</div><div class="stat-value">${(u.completedLinks||0).toLocaleString()}</div><div class="stat-label">Link đã vượt</div></div><div class="stat-card"><div class="stat-icon">👥</div><div class="stat-value">${(u.friends||[]).length}</div><div class="stat-label">Bạn bè</div></div><div class="stat-card"><div class="stat-icon">🎁</div><div class="stat-value">${u.chestsOpened||0}</div><div class="stat-label">Rương đã mở</div></div><div class="stat-card"><div class="stat-icon">🏆</div><div class="stat-value">${(u.totalLinksWeekly||0).toLocaleString()}</div><div class="stat-label">Link tuần này</div></div></div></div>
             <div class="card"><div class="card-title">🎯 Tiến độ mở rương</div><div class="progress-bar"><div class="progress-fill" style="width:${((u.completedLinks||0)%CONFIG.linksForChest)/CONFIG.linksForChest*100}%"></div></div><p style="text-align:center;font-size:13px;color:var(--text2);">${(u.completedLinks||0)%CONFIG.linksForChest}/${CONFIG.linksForChest} link</p></div>
         `;
         document.getElementById('btnDaily').onclick = () => this.doDaily();
     }
     async doDaily() {
-        const result = await FB.dailyCheckin(this.app.user.id);
-        if (result.status === 'already') this.app.toast('Hôm nay bạn đã điểm danh rồi!', 'warning');
-        else { this.app.toast(`+${result.reward} 🪙! Ngày ${result.streak}/7`, 'success'); this.app.refreshUserBar(); this.render(); }
+        const btn = document.getElementById('btnDaily');
+        const originalText = btn.textContent;
+        btn.textContent = '⏳ Đang xử lý...';
+        btn.disabled = true;
+        try {
+            const result = await FB.dailyCheckin(this.app.user.id);
+            if (result.status === 'already') this.app.toast('Hôm nay bạn đã điểm danh rồi!', 'warning');
+            else { this.app.toast(`+${result.reward} 🪙! Ngày ${result.streak}/7`, 'success'); this.app.refreshUserBar(); this.render(); }
+        } catch (error) {
+            this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
+        } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
     }
 }
 
@@ -418,34 +480,69 @@ class TasksPage {
         const goBtn = this.container.querySelector('.get-link-btn');
         if (goBtn && !isCooldown) {
             goBtn.onclick = async () => {
-                const task = await FB.getRandomTask(this.app.user.id);
-                if (task) {
-                    if (this.app.tg) {
-                        this.app.tg.openLink(task.link);
+                goBtn.disabled = true;
+                goBtn.innerHTML = '<span style="font-size:30px;">⏳</span> <span>Đang tải...</span>';
+                try {
+                    const task = await FB.getRandomTask(this.app.user.id);
+                    if (task) {
+                        if (this.app.tg) {
+                            this.app.tg.openLink(task.link);
+                        } else {
+                            window.open(task.link, '_blank');
+                        }
+                        this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
                     } else {
-                        window.open(task.link, '_blank');
+                        this.app.toast('Hết link! Admin đang thêm link mới...', 'warning');
                     }
-                    this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
-                } else {
-                    this.app.toast('Hết link! Admin đang thêm link mới...', 'warning');
+                } catch (error) {
+                    this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
+                } finally {
+                    goBtn.innerHTML = '<span style="font-size:30px;">🔗</span> <span>LẤY LINK</span>';
+                    goBtn.disabled = false;
                 }
             };
         }
         this.container.querySelector('#btnVerify').onclick = async () => {
             const code = this.container.querySelector('#codeInput').value.trim(); if (!code) return this.app.toast('Nhập mã!', 'warning');
-            const result = await FB.verifyCode(this.app.user.id, code);
-            if (result.status === 'ok') {
-                this.app.toast(`+${result.reward} 🪙!${result.warning ? ' ⚠️ ' + result.warning : ''}`, result.warning ? 'warning' : 'success');
-                this.app.refreshUserBar();
-                this.render();
-            } else if (result.status === 'cooldown') {
-                this.app.toast(result.message, 'warning');
-                this.render();
-            } else {
-                this.app.toast(result.message || 'Mã không đúng!', 'error');
+            const btn = this.container.querySelector('#btnVerify');
+            const originalText = btn.textContent;
+            btn.textContent = '⏳ Đang xử lý...';
+            btn.disabled = true;
+            try {
+                const result = await FB.verifyCode(this.app.user.id, code);
+                if (result.status === 'ok') {
+                    this.app.toast(`+${result.reward} 🪙!${result.warning ? ' ⚠️ ' + result.warning : ''}`, result.warning ? 'warning' : 'success');
+                    this.app.refreshUserBar();
+                    this.render();
+                } else if (result.status === 'cooldown') {
+                    this.app.toast(result.message, 'warning');
+                    this.render();
+                } else {
+                    this.app.toast(result.message || 'Mã không đúng!', 'error');
+                }
+            } catch (error) {
+                this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
             }
         };
-        this.container.querySelector('#btnChest').onclick = async () => { const res = await FB.openChest(this.app.user.id); if (res.status === 'ok') { this.app.toast(`Nhận ${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); this.render(); } else this.app.toast(res.message, 'error'); };
+        this.container.querySelector('#btnChest').onclick = async () => { 
+            const btn = this.container.querySelector('#btnChest');
+            const originalText = btn.textContent;
+            btn.textContent = '⏳ Đang mở...';
+            btn.disabled = true;
+            try {
+                const res = await FB.openChest(this.app.user.id); 
+                if (res.status === 'ok') { this.app.toast(`Nhận ${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); this.render(); } 
+                else this.app.toast(res.message, 'error');
+            } catch (error) {
+                this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        };
     }
 }
 
@@ -461,14 +558,32 @@ class FriendsPage {
         this.container.querySelector('#copyLink').onclick = () => { navigator.clipboard.writeText(refLink); this.app.toast('Đã copy!', 'success'); };
         this.loadTopFriends();
     }
-    async loadTopFriends() { const top = await FB.getTopFriends(10); const html = top.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username||'Unknown'}</span><span style="margin-left:auto;">👥 ${u.friends}</span></div>`).join(''); this.container.querySelector('#topFriends').innerHTML = html || '<p>Chưa có dữ liệu</p>'; }
+    async loadTopFriends() { 
+        try {
+            const top = await FB.getTopFriends(10); 
+            const html = top.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username||'Unknown'}</span><span style="margin-left:auto;">👥 ${u.friends}</span></div>`).join(''); 
+            this.container.querySelector('#topFriends').innerHTML = html || '<p>Chưa có dữ liệu</p>';
+        } catch (error) {
+            this.container.querySelector('#topFriends').innerHTML = '<p>Không thể tải dữ liệu</p>';
+        }
+    }
 }
 
 class LeaderboardPage {
-    constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
+    constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; this.countdownInterval = null; }
+    
+    // THÊM PHƯƠNG THỨC DESTROY ĐỂ CLEANUP
+    destroy() {
+        if (this.countdownInterval) {
+            clearInterval(this.countdownInterval);
+            this.countdownInterval = null;
+        }
+    }
+    
     async render() {
         if (this.countdownInterval) {
             clearInterval(this.countdownInterval);
+            this.countdownInterval = null;
         }
         await FB.checkAndDistributeRewards();
         
@@ -507,11 +622,16 @@ class LeaderboardPage {
         
         this.countdownInterval = setInterval(() => {
             const timeEl = document.querySelector('.countdown-timer');
-            if (!timeEl) { clearInterval(this.countdownInterval); return; }
+            if (!timeEl) { 
+                clearInterval(this.countdownInterval); 
+                this.countdownInterval = null;
+                return; 
+            }
             const t = FB.getTimeUntilSunday8AM();
             if (t <= 0) {
                 timeEl.textContent = '🔄 Đang phát thưởng...';
                 clearInterval(this.countdownInterval);
+                this.countdownInterval = null;
                 this.render();
                 return;
             }
@@ -569,38 +689,77 @@ class AccountPage {
             }
         };
 
-        this.container.querySelector('#btnGift').onclick = async () => { const code = this.container.querySelector('#giftInput').value.trim(); if (!code) return this.app.toast('Nhập code!', 'warning'); const res = await FB.redeemGiftCode(this.app.user.id, code); if (res.status === 'ok') { this.app.toast(`+${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); } else this.app.toast('Code không hợp lệ!', 'error'); };
-        this.container.querySelector('#btnWithdraw').onclick = async () => { const data = { bank: this.container.querySelector('#wdBank').value.trim(), accountName: this.container.querySelector('#wdName').value.trim(), accountNumber: this.container.querySelector('#wdAccount').value.trim(), amount: this.container.querySelector('#wdAmount').value.trim() }; if (!data.bank || !data.accountName || !data.accountNumber || !data.amount) return this.app.toast('Điền đầy đủ!', 'warning'); const res = await FB.requestWithdraw(this.app.user.id, data); if (res.status === 'ok') { this.app.toast('Đã gửi yêu cầu!', 'success'); this.app.refreshUserBar(); this.render(); } else this.app.toast(res.message, 'error'); };
+        this.container.querySelector('#btnGift').onclick = async () => { 
+            const code = this.container.querySelector('#giftInput').value.trim(); 
+            if (!code) return this.app.toast('Nhập code!', 'warning'); 
+            const btn = this.container.querySelector('#btnGift');
+            const originalText = btn.textContent;
+            btn.textContent = '⏳ Đang xử lý...';
+            btn.disabled = true;
+            try {
+                const res = await FB.redeemGiftCode(this.app.user.id, code); 
+                if (res.status === 'ok') { this.app.toast(`+${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); } 
+                else this.app.toast('Code không hợp lệ!', 'error');
+            } catch (error) {
+                this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        };
+        this.container.querySelector('#btnWithdraw').onclick = async () => { 
+            const data = { bank: this.container.querySelector('#wdBank').value.trim(), accountName: this.container.querySelector('#wdName').value.trim(), accountNumber: this.container.querySelector('#wdAccount').value.trim(), amount: this.container.querySelector('#wdAmount').value.trim() }; 
+            if (!data.bank || !data.accountName || !data.accountNumber || !data.amount) return this.app.toast('Điền đầy đủ!', 'warning'); 
+            const btn = this.container.querySelector('#btnWithdraw');
+            const originalText = btn.textContent;
+            btn.textContent = '⏳ Đang xử lý...';
+            btn.disabled = true;
+            try {
+                const res = await FB.requestWithdraw(this.app.user.id, data); 
+                if (res.status === 'ok') { this.app.toast('Đã gửi yêu cầu!', 'success'); this.app.refreshUserBar(); this.render(); } 
+                else this.app.toast(res.message, 'error');
+            } catch (error) {
+                this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        };
         this.loadHistory();
     }
     async loadHistory() {
-        const history = await FB.getWithdrawHistory(this.app.user.id);
-        const container = this.container.querySelector('#wdHistory');
-        if (!container) return;
-        if (history.length === 0) {
-            container.innerHTML = '<p style="color:var(--text2);">Chưa có lịch sử rút</p>';
-            return;
-        }
-        const html = history.map(h => {
-            let dateStr = 'N/A';
-            if (h.createdAt) {
-                const ts = typeof h.createdAt === 'object' ? Date.now() : h.createdAt;
-                dateStr = new Date(ts).toLocaleString('vi-VN');
+        try {
+            const history = await FB.getWithdrawHistory(this.app.user.id);
+            const container = this.container.querySelector('#wdHistory');
+            if (!container) return;
+            if (history.length === 0) {
+                container.innerHTML = '<p style="color:var(--text2);">Chưa có lịch sử rút</p>';
+                return;
             }
-            let statusText = '🟡 Chờ';
-            let statusClass = 'badge-pending';
-            if (h.status === 'approved') { statusText = '🟢 Thành công'; statusClass = 'badge-success'; }
-            else if (h.status === 'rejected') { statusText = '🔴 Từ chối'; statusClass = 'badge-rejected'; }
-            return `
-                <div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05);">
-                    <p>💰 ${h.amountXu.toLocaleString()} 🪙 = ${h.amountVnd.toLocaleString()}đ</p>
-                    <p>🏦 ${h.bank} - ${h.accountNumber}</p>
-                    <span class="badge ${statusClass}">${statusText}</span>
-                    <p style="font-size:10px;color:var(--text2);">${dateStr}</p>
-                </div>
-            `;
-        }).join('');
-        container.innerHTML = html;
+            const html = history.map(h => {
+                let dateStr = 'N/A';
+                if (h.createdAt) {
+                    const ts = typeof h.createdAt === 'object' ? Date.now() : h.createdAt;
+                    dateStr = new Date(ts).toLocaleString('vi-VN');
+                }
+                let statusText = '🟡 Chờ';
+                let statusClass = 'badge-pending';
+                if (h.status === 'approved') { statusText = '🟢 Thành công'; statusClass = 'badge-success'; }
+                else if (h.status === 'rejected') { statusText = '🔴 Từ chối'; statusClass = 'badge-rejected'; }
+                return `
+                    <div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05);">
+                        <p>💰 ${h.amountXu.toLocaleString()} 🪙 = ${h.amountVnd.toLocaleString()}đ</p>
+                        <p>🏦 ${h.bank} - ${h.accountNumber}</p>
+                        <span class="badge ${statusClass}">${statusText}</span>
+                        <p style="font-size:10px;color:var(--text2);">${dateStr}</p>
+                    </div>
+                `;
+            }).join('');
+            container.innerHTML = html;
+        } catch (error) {
+            const container = this.container.querySelector('#wdHistory');
+            if (container) container.innerHTML = '<p style="color:var(--text2);">Không thể tải lịch sử</p>';
+        }
     }
 }
 
@@ -671,33 +830,44 @@ class AdminPage {
                 <button class="btn btn-primary" id="saveConfig">💾 Lưu cấu hình</button>
             `;
             document.getElementById('saveConfig').onclick = async () => {
-                const newConfig = {
-                    dailyRewards: document.getElementById('cfgDailyRewards').value.split(',').map(Number),
-                    linksForChest: parseInt(document.getElementById('cfgLinksForChest').value) || 5,
-                    linkCooldown: (parseInt(document.getElementById('cfgLinkCooldown').value) || 5) * 60000,
-                    maxCodesPerDay: parseInt(document.getElementById('cfgMaxCodesPerDay').value) || 20,
-                    chestRewards: document.getElementById('cfgChestRewards').value.split(',').map(Number),
-                    friendRewards: Object.fromEntries(document.getElementById('cfgFriendRewards').value.split(',').map(s => s.split(':').map(Number))),
-                    maxFriendsPerDay: parseInt(document.getElementById('cfgMaxFriendsPerDay').value) || 50,
-                    minBet: parseInt(document.getElementById('cfgMinBet').value) || 100,
-                    maxBet: parseInt(document.getElementById('cfgMaxBet').value) || 100000,
-                    pvpFee: (parseFloat(document.getElementById('cfgPvpFee').value) || 10) / 100,
-                    pvpTimeout: parseInt(document.getElementById('cfgPvpTimeout').value) || 30,
-                    minWithdraw: parseInt(document.getElementById('cfgMinWithdraw').value) || 20000,
-                    maxWithdraw: parseInt(document.getElementById('cfgMaxWithdraw').value) || 100000,
-                    maxWithdrawPerDay: parseInt(document.getElementById('cfgMaxWithdrawPerDay').value) || 3,
-                    exchange_rate: parseInt(document.getElementById('cfgRate').value) || 10
-                };
-                await FB.db.ref('admin_config').set(newConfig);
-                await FB.loadConfig();
-                await FB.db.ref('admin_logs').push({
-                    adminId: this.app.user.id,
-                    action: 'save_config',
-                    details: newConfig,
-                    timestamp: firebase.database.ServerValue.TIMESTAMP
-                });
-                this.app.toast('Đã lưu cấu hình!', 'success');
-                this.loadTab('config');
+                const btn = document.getElementById('saveConfig');
+                const originalText = btn.textContent;
+                btn.textContent = '⏳ Đang lưu...';
+                btn.disabled = true;
+                try {
+                    const newConfig = {
+                        dailyRewards: document.getElementById('cfgDailyRewards').value.split(',').map(Number),
+                        linksForChest: parseInt(document.getElementById('cfgLinksForChest').value) || 5,
+                        linkCooldown: (parseInt(document.getElementById('cfgLinkCooldown').value) || 5) * 60000,
+                        maxCodesPerDay: parseInt(document.getElementById('cfgMaxCodesPerDay').value) || 20,
+                        chestRewards: document.getElementById('cfgChestRewards').value.split(',').map(Number),
+                        friendRewards: Object.fromEntries(document.getElementById('cfgFriendRewards').value.split(',').map(s => s.split(':').map(Number))),
+                        maxFriendsPerDay: parseInt(document.getElementById('cfgMaxFriendsPerDay').value) || 50,
+                        minBet: parseInt(document.getElementById('cfgMinBet').value) || 100,
+                        maxBet: parseInt(document.getElementById('cfgMaxBet').value) || 100000,
+                        pvpFee: (parseFloat(document.getElementById('cfgPvpFee').value) || 10) / 100,
+                        pvpTimeout: parseInt(document.getElementById('cfgPvpTimeout').value) || 30,
+                        minWithdraw: parseInt(document.getElementById('cfgMinWithdraw').value) || 20000,
+                        maxWithdraw: parseInt(document.getElementById('cfgMaxWithdraw').value) || 100000,
+                        maxWithdrawPerDay: parseInt(document.getElementById('cfgMaxWithdrawPerDay').value) || 3,
+                        exchange_rate: parseInt(document.getElementById('cfgRate').value) || 10
+                    };
+                    await FB.db.ref('admin_config').set(newConfig);
+                    await FB.loadConfig();
+                    await FB.db.ref('admin_logs').push({
+                        adminId: this.app.user.id,
+                        action: 'save_config',
+                        details: newConfig,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                    this.app.toast('Đã lưu cấu hình!', 'success');
+                    this.loadTab('config');
+                } catch (error) {
+                    this.app.toast('Có lỗi xảy ra!', 'error');
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
             };
         }
         else if (tab === 'fund') {
@@ -711,15 +881,26 @@ class AdminPage {
             document.getElementById('btnAddFund').onclick = async () => {
                 const add = parseInt(document.getElementById('fundAdd').value) || 0;
                 if (add <= 0) return this.app.toast('Nhập số 🪙!', 'warning');
-                await FB.db.ref('prize_fund').set(fund + add);
-                await FB.db.ref('admin_logs').push({
-                    adminId: this.app.user.id,
-                    action: 'add_fund',
-                    amount: add,
-                    timestamp: firebase.database.ServerValue.TIMESTAMP
-                });
-                this.app.toast(`Đã nạp ${add.toLocaleString()} 🪙!`, 'success');
-                this.loadTab('fund');
+                const btn = document.getElementById('btnAddFund');
+                const originalText = btn.textContent;
+                btn.textContent = '⏳ Đang xử lý...';
+                btn.disabled = true;
+                try {
+                    await FB.db.ref('prize_fund').set(fund + add);
+                    await FB.db.ref('admin_logs').push({
+                        adminId: this.app.user.id,
+                        action: 'add_fund',
+                        amount: add,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                    this.app.toast(`Đã nạp ${add.toLocaleString()} 🪙!`, 'success');
+                    this.loadTab('fund');
+                } catch (error) {
+                    this.app.toast('Có lỗi xảy ra!', 'error');
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
             };
         }
         else if (tab === 'tasks') {
@@ -731,28 +912,44 @@ class AdminPage {
                 const reward = parseInt(document.getElementById('taskReward').value) || 100;
                 const maxUses = parseInt(document.getElementById('taskMaxUses').value) || 3;
                 if (!link || !code) return this.app.toast('Nhập đủ!', 'warning');
-                await FB.db.ref('tasks').push({ link, code, reward, active: true, maxUses: maxUses, usedCount: 0 });
-                await FB.db.ref('admin_logs').push({
-                    adminId: this.app.user.id,
-                    action: 'add_task',
-                    task: { link, code, reward, maxUses },
-                    timestamp: firebase.database.ServerValue.TIMESTAMP
-                });
-                this.app.toast('Đã thêm!', 'success');
-                this.loadTab('tasks');
+                const btn = document.getElementById('addTask');
+                const originalText = btn.textContent;
+                btn.textContent = '⏳ Đang thêm...';
+                btn.disabled = true;
+                try {
+                    await FB.db.ref('tasks').push({ link, code, reward, active: true, maxUses: maxUses, usedCount: 0 });
+                    await FB.db.ref('admin_logs').push({
+                        adminId: this.app.user.id,
+                        action: 'add_task',
+                        task: { link, code, reward, maxUses },
+                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                    this.app.toast('Đã thêm!', 'success');
+                    this.loadTab('tasks');
+                } catch (error) {
+                    this.app.toast('Có lỗi xảy ra!', 'error');
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
             };
             document.querySelectorAll('.btn-danger').forEach(btn => {
                 btn.onclick = async () => {
+                    if (!confirm('Xóa nhiệm vụ này?')) return;
                     const taskId = btn.dataset.id;
-                    await FB.db.ref(`tasks/${taskId}`).remove();
-                    await FB.db.ref('admin_logs').push({
-                        adminId: this.app.user.id,
-                        action: 'delete_task',
-                        taskId: taskId,
-                        timestamp: firebase.database.ServerValue.TIMESTAMP
-                    });
-                    this.app.toast('Đã xóa!', 'success');
-                    this.loadTab('tasks');
+                    try {
+                        await FB.db.ref(`tasks/${taskId}`).remove();
+                        await FB.db.ref('admin_logs').push({
+                            adminId: this.app.user.id,
+                            action: 'delete_task',
+                            taskId: taskId,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP
+                        });
+                        this.app.toast('Đã xóa!', 'success');
+                        this.loadTab('tasks');
+                    } catch (error) {
+                        this.app.toast('Có lỗi xảy ra!', 'error');
+                    }
                 };
             });
         }
@@ -766,29 +963,45 @@ class AdminPage {
                 const maxUses = parseInt(document.getElementById('giftMax').value) || 100;
                 const expiry = document.getElementById('giftExpiry').value;
                 if (!name) return this.app.toast('Nhập tên!', 'warning');
-                await FB.db.ref(`gift_codes/${name}`).set({ reward, maxUses, usedCount: 0, expiry: expiry ? new Date(expiry).getTime() : null, active: true });
-                await FB.db.ref('admin_logs').push({
-                    adminId: this.app.user.id,
-                    action: 'create_gift',
-                    code: name,
-                    details: { reward, maxUses, expiry },
-                    timestamp: firebase.database.ServerValue.TIMESTAMP
-                });
-                this.app.toast('Đã tạo!', 'success');
-                this.loadTab('giftcodes');
+                const btn = document.getElementById('createGift');
+                const originalText = btn.textContent;
+                btn.textContent = '⏳ Đang tạo...';
+                btn.disabled = true;
+                try {
+                    await FB.db.ref(`gift_codes/${name}`).set({ reward, maxUses, usedCount: 0, expiry: expiry ? new Date(expiry).getTime() : null, active: true });
+                    await FB.db.ref('admin_logs').push({
+                        adminId: this.app.user.id,
+                        action: 'create_gift',
+                        code: name,
+                        details: { reward, maxUses, expiry },
+                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                    this.app.toast('Đã tạo!', 'success');
+                    this.loadTab('giftcodes');
+                } catch (error) {
+                    this.app.toast('Có lỗi xảy ra!', 'error');
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
             };
             document.querySelectorAll('.btn-danger').forEach(btn => {
                 btn.onclick = async () => {
+                    if (!confirm(`Xóa Gift Code ${btn.dataset.code}?`)) return;
                     const code = btn.dataset.code;
-                    await FB.db.ref(`gift_codes/${code}`).remove();
-                    await FB.db.ref('admin_logs').push({
-                        adminId: this.app.user.id,
-                        action: 'delete_gift',
-                        code: code,
-                        timestamp: firebase.database.ServerValue.TIMESTAMP
-                    });
-                    this.app.toast('Đã xóa!', 'success');
-                    this.loadTab('giftcodes');
+                    try {
+                        await FB.db.ref(`gift_codes/${code}`).remove();
+                        await FB.db.ref('admin_logs').push({
+                            adminId: this.app.user.id,
+                            action: 'delete_gift',
+                            code: code,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP
+                        });
+                        this.app.toast('Đã xóa!', 'success');
+                        this.loadTab('giftcodes');
+                    } catch (error) {
+                        this.app.toast('Có lỗi xảy ra!', 'error');
+                    }
                 };
             });
         }
@@ -831,18 +1044,22 @@ class AdminPage {
                     const id = btn.dataset.id;
                     const uid = btn.dataset.uid;
                     const amount = parseInt(btn.dataset.amount);
-                    await FB.db.ref(`withdraw_requests/${id}`).update({
-                        status: 'approved', reviewedBy: this.app.user.username, reviewedAt: firebase.database.ServerValue.TIMESTAMP
-                    });
-                    await FB.db.ref('admin_logs').push({
-                        adminId: this.app.user.id,
-                        action: 'approve_withdraw',
-                        requestId: id,
-                        userId: uid,
-                        amount: amount,
-                        timestamp: firebase.database.ServerValue.TIMESTAMP
-                    });
-                    this.app.toast('Đã duyệt!', 'success'); this.loadTab('withdraws');
+                    try {
+                        await FB.db.ref(`withdraw_requests/${id}`).update({
+                            status: 'approved', reviewedBy: this.app.user.username, reviewedAt: firebase.database.ServerValue.TIMESTAMP
+                        });
+                        await FB.db.ref('admin_logs').push({
+                            adminId: this.app.user.id,
+                            action: 'approve_withdraw',
+                            requestId: id,
+                            userId: uid,
+                            amount: amount,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP
+                        });
+                        this.app.toast('Đã duyệt!', 'success'); this.loadTab('withdraws');
+                    } catch (error) {
+                        this.app.toast('Có lỗi xảy ra!', 'error');
+                    }
                 };
             });
             document.querySelectorAll('.reject').forEach(btn => {
@@ -852,20 +1069,24 @@ class AdminPage {
                     const id = btn.dataset.id;
                     const uid = btn.dataset.uid;
                     const amount = parseInt(btn.dataset.amount);
-                    await FB.addBalance(uid, amount);
-                    await FB.db.ref(`withdraw_requests/${id}`).update({
-                        status: 'rejected', reviewedBy: this.app.user.username, reviewedAt: firebase.database.ServerValue.TIMESTAMP, rejectReason: reason || ''
-                    });
-                    await FB.db.ref('admin_logs').push({
-                        adminId: this.app.user.id,
-                        action: 'reject_withdraw',
-                        requestId: id,
-                        userId: uid,
-                        amount: amount,
-                        reason: reason || '',
-                        timestamp: firebase.database.ServerValue.TIMESTAMP
-                    });
-                    this.app.toast('Đã từ chối, hoàn 🪙!', 'warning'); this.loadTab('withdraws');
+                    try {
+                        await FB.addBalance(uid, amount);
+                        await FB.db.ref(`withdraw_requests/${id}`).update({
+                            status: 'rejected', reviewedBy: this.app.user.username, reviewedAt: firebase.database.ServerValue.TIMESTAMP, rejectReason: reason || ''
+                        });
+                        await FB.db.ref('admin_logs').push({
+                            adminId: this.app.user.id,
+                            action: 'reject_withdraw',
+                            requestId: id,
+                            userId: uid,
+                            amount: amount,
+                            reason: reason || '',
+                            timestamp: firebase.database.ServerValue.TIMESTAMP
+                        });
+                        this.app.toast('Đã từ chối, hoàn 🪙!', 'warning'); this.loadTab('withdraws');
+                    } catch (error) {
+                        this.app.toast('Có lỗi xảy ra!', 'error');
+                    }
                 };
             });
         }
@@ -917,26 +1138,38 @@ class AdminPage {
                     btn.onclick = async () => {
                         const newBal = parseInt(document.getElementById(`editBal_${btn.dataset.uid}`).value);
                         if (isNaN(newBal)) return;
-                        await FB.updateUser(btn.dataset.uid, { balance: newBal });
-                        this.app.toast('Đã cập nhật!', 'success');
-                        this.loadTab('users');
+                        try {
+                            await FB.updateUser(btn.dataset.uid, { balance: newBal });
+                            this.app.toast('Đã cập nhật!', 'success');
+                            this.loadTab('users');
+                        } catch (error) {
+                            this.app.toast('Có lỗi xảy ra!', 'error');
+                        }
                     };
                 });
                 document.querySelectorAll('.banUser').forEach(btn => {
                     btn.onclick = async () => {
                         if (confirm(`Khóa tài khoản ${btn.dataset.username}?`)) {
-                            await FB.updateUser(btn.dataset.uid, { isBanned: true });
-                            this.app.toast('Đã khóa!', 'success');
-                            this.loadTab('users');
+                            try {
+                                await FB.updateUser(btn.dataset.uid, { isBanned: true });
+                                this.app.toast('Đã khóa!', 'success');
+                                this.loadTab('users');
+                            } catch (error) {
+                                this.app.toast('Có lỗi xảy ra!', 'error');
+                            }
                         }
                     };
                 });
                 document.querySelectorAll('.unbanUser').forEach(btn => {
                     btn.onclick = async () => {
                         if (confirm(`Mở khóa tài khoản ${btn.dataset.username}?`)) {
-                            await FB.updateUser(btn.dataset.uid, { isBanned: false });
-                            this.app.toast('Đã mở khóa!', 'success');
-                            this.loadTab('users');
+                            try {
+                                await FB.updateUser(btn.dataset.uid, { isBanned: false });
+                                this.app.toast('Đã mở khóa!', 'success');
+                                this.loadTab('users');
+                            } catch (error) {
+                                this.app.toast('Có lỗi xảy ra!', 'error');
+                            }
                         }
                     };
                 });
@@ -945,23 +1178,27 @@ class AdminPage {
                         const confirmMsg = `Bạn có chắc muốn XÓA VĨNH VIỄN tài khoản "${btn.dataset.username}" (ID: ${btn.dataset.uid})?\n\nHành động này sẽ xóa tất cả dữ liệu liên quan và KHÔNG THỂ hoàn tác!`;
                         if (confirm(confirmMsg)) {
                             const uid = btn.dataset.uid;
-                            await FB.db.ref(`users/${uid}`).remove();
-                            await FB.db.ref(`leaderboard/${uid}`).remove();
-                            const withdrawSnap = await FB.db.ref('withdraw_requests').orderByChild('userId').equalTo(uid).once('value');
-                            const updates = {};
-                            withdrawSnap.forEach(c => { updates[`withdraw_requests/${c.key}`] = null; });
-                            if (Object.keys(updates).length > 0) {
-                                await FB.db.ref().update(updates);
+                            try {
+                                await FB.db.ref(`users/${uid}`).remove();
+                                await FB.db.ref(`leaderboard/${uid}`).remove();
+                                const withdrawSnap = await FB.db.ref('withdraw_requests').orderByChild('userId').equalTo(uid).once('value');
+                                const updates = {};
+                                withdrawSnap.forEach(c => { updates[`withdraw_requests/${c.key}`] = null; });
+                                if (Object.keys(updates).length > 0) {
+                                    await FB.db.ref().update(updates);
+                                }
+                                await FB.db.ref('admin_logs').push({
+                                    adminId: this.app.user.id,
+                                    action: 'delete_user',
+                                    deletedUserId: uid,
+                                    deletedUsername: btn.dataset.username,
+                                    timestamp: firebase.database.ServerValue.TIMESTAMP
+                                });
+                                this.app.toast(`Đã xóa tài khoản ${btn.dataset.username}!`, 'success');
+                                this.loadTab('users');
+                            } catch (error) {
+                                this.app.toast('Có lỗi xảy ra!', 'error');
                             }
-                            await FB.db.ref('admin_logs').push({
-                                adminId: this.app.user.id,
-                                action: 'delete_user',
-                                deletedUserId: uid,
-                                deletedUsername: btn.dataset.username,
-                                timestamp: firebase.database.ServerValue.TIMESTAMP
-                            });
-                            this.app.toast(`Đã xóa tài khoản ${btn.dataset.username}!`, 'success');
-                            this.loadTab('users');
                         }
                     };
                 });
@@ -1018,16 +1255,27 @@ class AdminPage {
             document.getElementById('btnNotify').onclick = async () => {
                 const msg = document.getElementById('notifyMsg').value.trim();
                 if (!msg) return this.app.toast('Nhập nội dung!', 'warning');
-                await FB.db.ref('notifications').push({ message: msg, sentBy: this.app.user.username, timestamp: firebase.database.ServerValue.TIMESTAMP });
-                await FB.db.ref('admin_logs').push({
-                    adminId: this.app.user.id,
-                    action: 'send_notification',
-                    message: msg,
-                    timestamp: firebase.database.ServerValue.TIMESTAMP
-                });
-                this.app.toast('Đã gửi thông báo!', 'success');
-                document.getElementById('notifyMsg').value = '';
-                this.loadTab('notify');
+                const btn = document.getElementById('btnNotify');
+                const originalText = btn.textContent;
+                btn.textContent = '⏳ Đang gửi...';
+                btn.disabled = true;
+                try {
+                    await FB.db.ref('notifications').push({ message: msg, sentBy: this.app.user.username, timestamp: firebase.database.ServerValue.TIMESTAMP });
+                    await FB.db.ref('admin_logs').push({
+                        adminId: this.app.user.id,
+                        action: 'send_notification',
+                        message: msg,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                    this.app.toast('Đã gửi thông báo!', 'success');
+                    document.getElementById('notifyMsg').value = '';
+                    this.loadTab('notify');
+                } catch (error) {
+                    this.app.toast('Có lỗi xảy ra!', 'error');
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
             };
             const notifySnap = await FB.db.ref('notifications').orderByChild('timestamp').limitToLast(10).once('value');
             const notifies = []; notifySnap.forEach(c => notifies.push(c.val())); notifies.reverse();
@@ -1043,7 +1291,14 @@ class AdminPage {
             const alertSnap = await FB.db.ref('admin_alerts').orderByChild('timestamp').limitToLast(50).once('value');
             const alerts = []; alertSnap.forEach(c => alerts.push({ id: c.key, ...c.val() })); alerts.reverse();
             content.innerHTML = `<h3>🛡️ Cảnh báo bảo mật</h3>${alerts.map(a => `<div style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><p><b>${a.type}</b> - ${a.username} (${a.userId})</p><p style="font-size:11px;">${new Date(a.timestamp).toLocaleString('vi-VN')}</p>${a.status==='unread' ? `<button class="btn-sm btn-warning" data-id="${a.id}">Đã xem</button>` : ''}</div>`).join('') || '<p>Không có cảnh báo</p>'}`;
-            document.querySelectorAll('.btn-warning').forEach(btn => btn.onclick = async () => { await FB.db.ref(`admin_alerts/${btn.dataset.id}/status`).set('reviewed'); this.loadTab('security'); });
+            document.querySelectorAll('.btn-warning').forEach(btn => btn.onclick = async () => { 
+                try {
+                    await FB.db.ref(`admin_alerts/${btn.dataset.id}/status`).set('reviewed'); 
+                    this.loadTab('security');
+                } catch (error) {
+                    this.app.toast('Có lỗi xảy ra!', 'error');
+                }
+            });
         }
         else if (tab === 'theme') {
             const configSnap = await FB.db.ref('admin_config').once('value');
@@ -1098,22 +1353,34 @@ class AdminPage {
                     return;
                 }
 
-                await FB.db.ref('admin_config').update({
-                    starColor: newStarColor,
-                    bgColor1: newBgColor1,
-                    bgColor2: newBgColor2
-                });
-                await FB.loadConfig();
-                this.app.applyTheme();
+                const btn = document.getElementById('saveTheme');
+                const originalText = btn.textContent;
+                btn.textContent = '⏳ Đang lưu...';
+                btn.disabled = true;
 
-                await FB.db.ref('admin_logs').push({
-                    adminId: this.app.user.id,
-                    action: 'save_theme',
-                    details: { starColor: newStarColor, bgColor1: newBgColor1, bgColor2: newBgColor2 },
-                    timestamp: firebase.database.ServerValue.TIMESTAMP
-                });
-                this.app.toast('Đã lưu giao diện!', 'success');
-                this.loadTab('theme');
+                try {
+                    await FB.db.ref('admin_config').update({
+                        starColor: newStarColor,
+                        bgColor1: newBgColor1,
+                        bgColor2: newBgColor2
+                    });
+                    await FB.loadConfig();
+                    this.app.applyTheme();
+
+                    await FB.db.ref('admin_logs').push({
+                        adminId: this.app.user.id,
+                        action: 'save_theme',
+                        details: { starColor: newStarColor, bgColor1: newBgColor1, bgColor2: newBgColor2 },
+                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                    this.app.toast('Đã lưu giao diện!', 'success');
+                    this.loadTab('theme');
+                } catch (error) {
+                    this.app.toast('Có lỗi xảy ra!', 'error');
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
             };
         }
     }
@@ -1125,6 +1392,7 @@ class CayXumMo {
         this.tg = window.Telegram?.WebApp;
         if (this.tg) { this.tg.ready(); this.tg.expand(); }
         this.user = null; this.isAdmin = false;
+        this.currentPage = null; // THÊM MỚI
     }
     async init() {
         try {
@@ -1153,6 +1421,13 @@ class CayXumMo {
             });
             document.getElementById('btnNotifications').onclick = () => this.showNotifications();
             this.applyTheme(); // Áp dụng màu sắc
+            
+            // THÊM: Cleanup khi tab bị ẩn
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden && this.currentPage && this.currentPage.destroy) {
+                    this.currentPage.destroy();
+                }
+            });
         } catch (e) { document.getElementById('loadingScreen').innerHTML = `<div style="color:red;padding:20px;"><h3>❌ Lỗi khởi tạo:</h3><p>${e.message}</p></div>`; }
     }
     setupNav() {
@@ -1162,16 +1437,22 @@ class CayXumMo {
         document.querySelectorAll('.nav-btn').forEach(btn => btn.onclick = () => this.loadPage(btn.dataset.page));
     }
     async loadPage(page) {
+        // THÊM: Cleanup page cũ
+        if (this.currentPage && this.currentPage.destroy) {
+            this.currentPage.destroy();
+        }
         const main = document.getElementById('mainContent'); const userData = await FB.getUser(this.user.id);
         const pages = { home: HomePage, tasks: TasksPage, friends: FriendsPage, leaderboard: LeaderboardPage, pvp: PvPPage, account: AccountPage, admin: AdminPage };
-        if (pages[page]) new pages[page](this, main, userData).render();
+        if (pages[page]) {
+            this.currentPage = new pages[page](this, main, userData);
+            this.currentPage.render();
+        }
         document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
         const activeBtn = document.querySelector(`.nav-btn[data-page="${page}"]`); if (activeBtn) activeBtn.classList.add('active');
     }
     async refreshUserBar() { const userData = await FB.getUser(this.user.id); document.getElementById('userBar').innerHTML = `<span>👤 ${userData.username}${this.isAdmin ? ' <span style="background:#ffd700;color:#000;padding:2px 8px;border-radius:10px;font-size:10px;">ADMIN</span>' : ''}</span><span>🪙 ${(userData.balance||0).toLocaleString()}</span>`; }
     toast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = `toast toast-${type} show`; setTimeout(() => t.classList.remove('show'), 2500); }
 
-    // ✅ Hàm áp dụng màu sắc
     applyTheme() {
         const starColor = CONFIG.starColor || DEFAULT_CONFIG.starColor;
         const bgColor1 = CONFIG.bgColor1 || DEFAULT_CONFIG.bgColor1;
