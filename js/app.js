@@ -15,7 +15,6 @@ const DEFAULT_CONFIG = {
     maxWithdraw: 100000,
     maxWithdrawPerDay: 3,
     exchange_rate: 10,
-    // Màu sắc mặc định
     starColor: '#5f91ff',
     bgColor1: '#1b2735',
     bgColor2: '#090a0f'
@@ -41,7 +40,7 @@ window.onerror = function(msg, url, line) {
         `<div style="color:red;padding:20px;"><h3>❌ Lỗi JavaScript:</h3><p>${msg}</p><p>Dòng: ${line}</p></div>`;
 };
 
-// ==================== RATE LIMITER (THÊM MỚI) ====================
+// ==================== RATE LIMITER ====================
 class RateLimiter {
     constructor() {
         this.requests = new Map();
@@ -90,11 +89,21 @@ class FirebaseManager {
             maxWithdraw: saved.maxWithdraw || DEFAULT_CONFIG.maxWithdraw,
             maxWithdrawPerDay: saved.maxWithdrawPerDay || DEFAULT_CONFIG.maxWithdrawPerDay,
             exchange_rate: saved.exchange_rate || DEFAULT_CONFIG.exchange_rate,
-            // Đọc màu sắc
             starColor: saved.starColor || DEFAULT_CONFIG.starColor,
             bgColor1: saved.bgColor1 || DEFAULT_CONFIG.bgColor1,
             bgColor2: saved.bgColor2 || DEFAULT_CONFIG.bgColor2
         };
+    }
+
+    // ===== THÊM MỚI: Lưu lịch sử giao dịch =====
+    async addTransactionHistory(uid, type, amount, detail = '') {
+        const ref = this.db.ref('transactions/' + uid).push();
+        await ref.set({
+            type: type,
+            amount: amount,
+            detail: detail,
+            timestamp: firebase.database.ServerValue.TIMESTAMP
+        });
     }
 
     async createUser(uid, data) {
@@ -107,7 +116,7 @@ class FirebaseManager {
                 totalLinksWeekly: 0, totalLinksAllTime: 0,
                 friends: [], invitedBy: '', codesUsed: [], giftCodesUsed: [],
                 lastLinkTime: 0, chestsOpened: 0, isBanned: false, createdAt: Date.now(),
-                friendsCount: 0 // THÊM MỚI
+                friendsCount: 0
             });
         }
         return (await ref.once('value')).val();
@@ -128,6 +137,7 @@ class FirebaseManager {
         return uid === '5852621653' || uid === ' ';
     }
 
+    // ===== SỬA: Thêm log =====
     async dailyCheckin(uid) {
         const user = await this.getUser(uid);
         const today = new Date().toDateString();
@@ -136,6 +146,7 @@ class FirebaseManager {
         let streak = user.lastDaily === yesterday ? (user.dailyStreak >= 7 ? 1 : user.dailyStreak + 1) : 1;
         const reward = CONFIG.dailyRewards[streak - 1];
         await this.updateUser(uid, { dailyStreak: streak, lastDaily: today, balance: (user.balance || 0) + reward });
+        await this.addTransactionHistory(uid, 'daily', reward, `Điểm danh ngày ${streak}`);
         return { status: 'ok', streak, reward };
     }
 
@@ -160,8 +171,8 @@ class FirebaseManager {
         return { id: taskId, ...task };
     }
 
+    // ===== SỬA: Thêm log =====
     async verifyCode(uid, code) {
-        // THÊM RATE LIMITING
         if (!rateLimiter.check(`verify_${uid}`, 5, 60000)) {
             return { status: 'error', message: 'Bạn đã gửi quá nhiều yêu cầu, vui lòng đợi!' };
         }
@@ -222,6 +233,7 @@ class FirebaseManager {
             codesToday: today,
             codesCountToday: codesToday + 1
         });
+        await this.addTransactionHistory(uid, 'task', reward, `Vượt link: ${code}`);
         await this.updateLeaderboard(uid, (user.totalLinksWeekly || 0) + 1);
 
         if (isTool) {
@@ -230,9 +242,9 @@ class FirebaseManager {
         return { status: 'ok', reward };
     }
 
+    // ===== SỬA: Thêm log =====
     async openChest(uid) {
         const user = await this.getUser(uid);
-        // SỬA LỖI RƯƠNG - TÍNH ĐÚNG SỐ RƯƠNG CÓ THỂ MỞ
         const completedLinks = user.completedLinks || 0;
         const chestsCanOpen = Math.floor(completedLinks / CONFIG.linksForChest);
         
@@ -246,13 +258,14 @@ class FirebaseManager {
             chestsOpened: (user.chestsOpened || 0) + 1,
             completedLinks: completedLinks - CONFIG.linksForChest
         });
+        await this.addTransactionHistory(uid, 'chest', reward, `Mở rương nhận ${reward}🪙`);
         return { status: 'ok', reward };
     }
 
+    // ===== SỬA: Thêm log =====
     async addFriend(uid, friendId) {
         if (uid === friendId) return { status: 'error', message: 'Không thể tự mời chính mình!' };
         
-        // THÊM KIỂM TRA BẠN CÓ TỒN TẠI KHÔNG
         const friendData = await this.getUser(friendId);
         if (!friendData) return { status: 'error', message: 'Người dùng không tồn tại!' };
         
@@ -265,10 +278,15 @@ class FirebaseManager {
         for (let [k, v] of Object.entries(CONFIG.friendRewards)) {
             if (friends.length === parseInt(k)) { bonus = v; break; }
         }
-        if (bonus > 0) { await this.addBalance(uid, bonus); return { status: 'reward', count: friends.length, bonus }; }
+        if (bonus > 0) { 
+            await this.addBalance(uid, bonus);
+            await this.addTransactionHistory(uid, 'friend', bonus, `Thưởng mời bạn (${friends.length} bạn)`);
+            return { status: 'reward', count: friends.length, bonus }; 
+        }
         return { status: 'ok', count: friends.length };
     }
 
+    // ===== SỬA: Thêm log =====
     async redeemGiftCode(uid, code) {
         const snap = await this.db.ref('gift_codes/' + code).once('value');
         if (!snap.exists()) return { status: 'invalid' };
@@ -281,9 +299,11 @@ class FirebaseManager {
         await this.addBalance(uid, gift.reward);
         await this.updateUser(uid, { giftCodesUsed: [...(user.giftCodesUsed || []), code] });
         await this.db.ref('gift_codes/' + code + '/usedCount').set((gift.usedCount || 0) + 1);
+        await this.addTransactionHistory(uid, 'gift', gift.reward, `Nhận Gift Code: ${code}`);
         return { status: 'ok', reward: gift.reward };
     }
 
+    // ===== SỬA: Thêm log =====
     async requestWithdraw(uid, data) {
         const user = await this.getUser(uid);
         const amount = parseInt(data.amount);
@@ -298,6 +318,7 @@ class FirebaseManager {
             status: 'pending', createdAt: firebase.database.ServerValue.TIMESTAMP
         });
         await this.addBalance(uid, -amount);
+        await this.addTransactionHistory(uid, 'withdraw', -amount, `Rút ${amount}🪙`);
         return { status: 'ok', id: ref.key };
     }
 
@@ -314,6 +335,19 @@ class FirebaseManager {
         return arr;
     }
 
+    // ===== THÊM MỚI: Lấy lịch sử giao dịch của 1 user =====
+    async getTransactionHistory(uid, limit = 200) {
+        const snap = await this.db.ref('transactions/' + uid)
+            .orderByChild('timestamp')
+            .limitToLast(limit)
+            .once('value');
+        const arr = [];
+        snap.forEach(c => {
+            arr.push({ id: c.key, ...c.val() });
+        });
+        return arr.reverse();
+    }
+
     async updateLeaderboard(uid, links) {
         const user = await this.getUser(uid);
         await this.db.ref('leaderboard/' + uid).set({ userId: uid, username: user?.username || 'Unknown', links, updatedAt: Date.now() });
@@ -325,7 +359,6 @@ class FirebaseManager {
     }
 
     async getTopFriends(limit = 10) {
-        // SỬA - CHỈ TẢI TOP 10 THAY VÌ TẤT CẢ
         const snap = await this.db.ref('users').orderByChild('friendsCount').limitToLast(limit).once('value');
         const arr = []; 
         snap.forEach(c => { 
@@ -572,7 +605,6 @@ class FriendsPage {
 class LeaderboardPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; this.countdownInterval = null; }
     
-    // THÊM PHƯƠNG THỨC DESTROY ĐỂ CLEANUP
     destroy() {
         if (this.countdownInterval) {
             clearInterval(this.countdownInterval);
@@ -763,8 +795,10 @@ class AccountPage {
     }
 }
 
+// ==================== ADMIN PAGE (ĐÃ SỬA) ====================
 class AdminPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
+    
     async render() {
         if (!this.app.isAdmin) { this.container.innerHTML = '<p>⛔ Không có quyền!</p>'; return; }
         const stats = await FB.getDashboard();
@@ -789,16 +823,175 @@ class AdminPage {
                 <button class="admin-tab" data-tab="logs">📝 Log</button>
                 <button class="admin-tab" data-tab="security">🛡️ Bảo mật</button>
                 <button class="admin-tab" data-tab="theme">🎨 Giao diện</button>
+                <button class="admin-tab" data-tab="history">📊 Lịch sử</button> <!-- THÊM MỚI -->
             </div>
             <div id="adminTabContent"></div>
         `;
         this.loadTab('config');
-        this.container.querySelectorAll('.admin-tab').forEach(btn => btn.onclick = () => { this.container.querySelectorAll('.admin-tab').forEach(b => b.classList.remove('active')); btn.classList.add('active'); this.loadTab(btn.dataset.tab); });
+        this.container.querySelectorAll('.admin-tab').forEach(btn => btn.onclick = () => { 
+            this.container.querySelectorAll('.admin-tab').forEach(b => b.classList.remove('active')); 
+            btn.classList.add('active'); 
+            this.loadTab(btn.dataset.tab); 
+        });
     }
 
     async loadTab(tab) {
         const content = document.getElementById('adminTabContent');
-        if (tab === 'config') {
+        
+        // ===== TAB LỊCH SỬ (THÊM MỚI) =====
+        if (tab === 'history') {
+            content.innerHTML = `
+                <div class="card">
+                    <div class="card-title">📊 Lịch sử giao dịch của User</div>
+                    <p style="font-size:13px;color:var(--text2);margin-bottom:8px;">Nhập User ID để xem toàn bộ lịch sử nhận/thưởng 🪙</p>
+                    <div style="display:flex;gap:8px;">
+                        <input class="input" id="searchHistoryUser" placeholder="Nhập User ID..." style="margin-bottom:0;flex:1;">
+                        <button class="btn btn-primary" id="searchHistoryBtn" style="width:auto;padding:10px 20px;">🔍 Tìm</button>
+                    </div>
+                </div>
+                <div id="historyResult">
+                    <p style="text-align:center;color:var(--text2);padding:30px 0;">🔍 Nhập User ID và bấm Tìm để xem lịch sử</p>
+                </div>
+            `;
+
+            document.getElementById('searchHistoryBtn').onclick = async () => {
+                const uid = document.getElementById('searchHistoryUser').value.trim();
+                if (!uid) {
+                    document.getElementById('historyResult').innerHTML = '<p style="text-align:center;color:var(--text2);">⚠️ Vui lòng nhập User ID</p>';
+                    return;
+                }
+
+                const btn = document.getElementById('searchHistoryBtn');
+                const originalText = btn.textContent;
+                btn.textContent = '⏳ Đang tải...';
+                btn.disabled = true;
+
+                try {
+                    // Kiểm tra user tồn tại
+                    const user = await FB.getUser(uid);
+                    if (!user) {
+                        document.getElementById('historyResult').innerHTML = `
+                            <div class="card" style="border-color:#ff4757;">
+                                <p style="color:#ff4757;">❌ Không tìm thấy user với ID: <b>${uid}</b></p>
+                                <p style="font-size:13px;color:var(--text2);">Vui lòng kiểm tra lại User ID</p>
+                            </div>
+                        `;
+                        return;
+                    }
+
+                    const history = await FB.getTransactionHistory(uid, 500);
+                    
+                    if (history.length === 0) {
+                        document.getElementById('historyResult').innerHTML = `
+                            <div class="card">
+                                <p><b>👤 ${user.username}</b> (ID: ${uid})</p>
+                                <p>🪙 Số dư hiện tại: <b>${(user.balance || 0).toLocaleString()}</b></p>
+                                <p style="color:var(--text2);margin-top:10px;">📭 Chưa có lịch sử giao dịch</p>
+                            </div>
+                        `;
+                        return;
+                    }
+
+                    // Tính tổng nhận và chi
+                    let totalIn = 0;
+                    let totalOut = 0;
+                    const typeLabels = {
+                        'daily': '📅 Điểm danh',
+                        'task': '🔗 Vượt link',
+                        'chest': '🎁 Mở rương',
+                        'gift': '🎫 Gift Code',
+                        'friend': '👥 Mời bạn',
+                        'withdraw': '💸 Rút xu'
+                    };
+                    const typeColors = {
+                        'daily': '#2ed573',
+                        'task': '#5f91ff',
+                        'chest': '#ffd700',
+                        'gift': '#ff6b81',
+                        'friend': '#a29bfe',
+                        'withdraw': '#ff4757'
+                    };
+
+                    history.forEach(h => {
+                        if (h.amount > 0) totalIn += h.amount;
+                        else totalOut += Math.abs(h.amount);
+                    });
+
+                    let html = `
+                        <div class="card">
+                            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                                <div>
+                                    <p style="font-size:18px;font-weight:bold;">👤 ${user.username}</p>
+                                    <p style="font-size:13px;color:var(--text2);">🆔 ${uid}</p>
+                                </div>
+                                <div style="text-align:right;">
+                                    <p>🪙 Số dư: <b style="color:#ffd700;font-size:20px;">${(user.balance || 0).toLocaleString()}</b></p>
+                                </div>
+                            </div>
+                            <div style="display:flex;gap:20px;margin-top:10px;flex-wrap:wrap;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);">
+                                <span style="color:#2ed573;">📈 Tổng nhận: <b>+${totalIn.toLocaleString()}</b></span>
+                                <span style="color:#ff4757;">📉 Tổng chi: <b>-${totalOut.toLocaleString()}</b></span>
+                                <span style="color:#5f91ff;">📊 Giao dịch: <b>${history.length}</b></span>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">📋 Chi tiết giao dịch</div>
+                            <div style="max-height:500px;overflow-y:auto;">
+                    `;
+
+                    history.forEach((h, index) => {
+                        const typeLabel = typeLabels[h.type] || h.type;
+                        const color = typeColors[h.type] || '#ffffff';
+                        const sign = h.amount >= 0 ? '+' : '';
+                        const date = h.timestamp ? new Date(h.timestamp).toLocaleString('vi-VN') : 'N/A';
+                        const bgColor = index % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.06)';
+                        
+                        html += `
+                            <div style="padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.05);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;background:${bgColor};border-radius:4px;margin-bottom:2px;">
+                                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                    <span style="color:${color};font-weight:600;font-size:14px;">${typeLabel}</span>
+                                    <span style="font-size:12px;color:var(--text2);">${h.detail || ''}</span>
+                                </div>
+                                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                                    <span style="color:${h.amount >= 0 ? '#2ed573' : '#ff4757'};font-weight:bold;font-size:15px;">
+                                        ${sign}${h.amount.toLocaleString()} 🪙
+                                    </span>
+                                    <span style="font-size:11px;color:var(--text2);">${date}</span>
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    html += `
+                            </div>
+                        </div>
+                    `;
+                    document.getElementById('historyResult').innerHTML = html;
+
+                } catch (error) {
+                    console.error('Load history error:', error);
+                    document.getElementById('historyResult').innerHTML = `
+                        <div class="card" style="border-color:#ff4757;">
+                            <p style="color:#ff4757;">❌ Có lỗi xảy ra khi tải lịch sử</p>
+                            <p style="font-size:13px;color:var(--text2);">Vui lòng thử lại sau</p>
+                        </div>
+                    `;
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
+            };
+
+            // Cho phép bấm Enter để tìm
+            document.getElementById('searchHistoryUser').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    document.getElementById('searchHistoryBtn').click();
+                }
+            });
+        }
+        // ===== CÁC TAB CŨ GIỮ NGUYÊN =====
+        else if (tab === 'config') {
+            // ... giữ nguyên code config ...
             const configSnap = await FB.db.ref('admin_config').once('value');
             const config = configSnap.val() || {};
             const rate = config.exchange_rate || CONFIG.exchange_rate;
@@ -1392,7 +1585,7 @@ class CayXumMo {
         this.tg = window.Telegram?.WebApp;
         if (this.tg) { this.tg.ready(); this.tg.expand(); }
         this.user = null; this.isAdmin = false;
-        this.currentPage = null; // THÊM MỚI
+        this.currentPage = null;
     }
     async init() {
         try {
@@ -1420,9 +1613,8 @@ class CayXumMo {
                 }
             });
             document.getElementById('btnNotifications').onclick = () => this.showNotifications();
-            this.applyTheme(); // Áp dụng màu sắc
+            this.applyTheme();
             
-            // THÊM: Cleanup khi tab bị ẩn
             document.addEventListener('visibilitychange', () => {
                 if (document.hidden && this.currentPage && this.currentPage.destroy) {
                     this.currentPage.destroy();
@@ -1437,7 +1629,6 @@ class CayXumMo {
         document.querySelectorAll('.nav-btn').forEach(btn => btn.onclick = () => this.loadPage(btn.dataset.page));
     }
     async loadPage(page) {
-        // THÊM: Cleanup page cũ
         if (this.currentPage && this.currentPage.destroy) {
             this.currentPage.destroy();
         }
