@@ -17,7 +17,43 @@ const DEFAULT_CONFIG = {
     exchange_rate: 10,
     starColor: '#5f91ff',
     bgColor1: '#1b2735',
-    bgColor2: '#090a0f'
+    bgColor2: '#090a0f',
+    // ===== THÊM MỚI: Cấu hình loại link =====
+    linkTypes: {
+        'link4m': {
+            name: 'Link4m',
+            maxPerDay: 2,
+            icon: '🔗',
+            color: '#5f91ff',
+            active: true,
+            url: 'https://link4m.co/st?api=6a6dd555d01b2011a600d9e6&url=https://cayxugiftcode.vercel.app/?code={code}'
+        },
+        'layma': {
+            name: 'Layma.net',
+            maxPerDay: 2,
+            icon: '🔗',
+            color: '#ffd700',
+            active: true,
+            url: 'https://layma.net/st?api=xxx&url=https://cayxugiftcode.vercel.app/?code={code}'
+        },
+        'link4sub': {
+            name: 'Link4sub',
+            maxPerDay: 1,
+            icon: '🔗',
+            color: '#2ed573',
+            active: true,
+            url: 'https://link4sub.co/st?api=xxx&url=https://cayxugiftcode.vercel.app/?code={code}'
+        },
+        'traffic': {
+            name: 'Traffic',
+            maxPerDay: 3,
+            icon: '🔗',
+            color: '#ff6b81',
+            active: true,
+            url: 'https://traffic.com/st?api=xxx&url=https://cayxugiftcode.vercel.app/?code={code}'
+        }
+    },
+    autoResetHour: 3 // 3h sáng tự động reset
 };
 
 let CONFIG = { ...DEFAULT_CONFIG };
@@ -63,11 +99,137 @@ class RateLimiter {
 }
 const rateLimiter = new RateLimiter();
 
+// ==================== CODE MANAGER (THÊM MỚI) ====================
+class CodeManager {
+    constructor() {
+        this.db = firebase.database();
+    }
+
+    // Kiểm tra mã có hợp lệ không (không hiển thị số ngày)
+    async checkCode(uid, code) {
+        const snap = await this.db.ref('code_usage/' + code).once('value');
+        const codeData = snap.val();
+
+        if (!codeData) {
+            return { valid: true, isNew: true };
+        }
+
+        if (codeData.users && codeData.users[uid]) {
+            const usedDate = codeData.users[uid];
+            const now = Date.now();
+            const oneMonth = 30 * 24 * 60 * 60 * 1000;
+
+            if (now - usedDate >= oneMonth) {
+                return { valid: true, isNew: false, canReuse: true };
+            }
+
+            return { valid: false, reason: 'used' };
+        }
+
+        return { valid: true, isNew: true };
+    }
+
+    // Đánh dấu mã đã dùng
+    async markCodeUsed(uid, code) {
+        const ref = this.db.ref('code_usage/' + code);
+        const snap = await ref.once('value');
+        const data = snap.val() || {};
+
+        if (!data.users) data.users = {};
+        data.users[uid] = Date.now();
+        data.totalUses = (data.totalUses || 0) + 1;
+        data.lastUsed = Date.now();
+
+        await ref.set(data);
+        return true;
+    }
+
+    // Lấy mã từ code_file theo loại
+    async getCodeByType(typeId) {
+        const snap = await this.db.ref('code_file/codes').once('value');
+        const codes = snap.val() || {};
+        
+        const available = Object.keys(codes).filter(key => {
+            const c = codes[key];
+            return c.type === typeId && c.usedCount < c.maxUses && c.active !== false;
+        });
+
+        if (available.length === 0) return null;
+        
+        const randomCode = available[Math.floor(Math.random() * available.length)];
+        return { code: randomCode, data: codes[randomCode] };
+    }
+
+    // Đánh dấu mã đã dùng trong code_file
+    async markCodeFileUsed(code) {
+        await this.db.ref('code_file/codes/' + code + '/usedCount').transaction(current => {
+            return (current || 0) + 1;
+        });
+    }
+
+    // Import file ma.txt
+    async importMaFile(fileContent, typeId = 'link4m') {
+        const lines = fileContent.split('\n');
+        const codes = {};
+        let totalCodes = 0;
+
+        for (let line of lines) {
+            line = line.trim();
+            if (!line) continue;
+            if (line.startsWith('#')) continue;
+
+            const code = line.trim();
+            if (code) {
+                codes[code] = {
+                    type: typeId,
+                    usedCount: 0,
+                    maxUses: 1,
+                    active: true,
+                    importedAt: Date.now()
+                };
+                totalCodes++;
+            }
+        }
+
+        return { codes, totalCodes };
+    }
+
+    // Lấy thống kê mã
+    async getCodeStats() {
+        const snap = await this.db.ref('code_file/codes').once('value');
+        const codes = snap.val() || {};
+        const stats = {
+            total: 0,
+            used: 0,
+            available: 0,
+            byType: {}
+        };
+
+        for (let [key, c] of Object.entries(codes)) {
+            stats.total++;
+            if (c.usedCount > 0) stats.used++;
+            else stats.available++;
+            
+            if (!stats.byType[c.type]) {
+                stats.byType[c.type] = { total: 0, used: 0, available: 0 };
+            }
+            stats.byType[c.type].total++;
+            if (c.usedCount > 0) stats.byType[c.type].used++;
+            else stats.byType[c.type].available++;
+        }
+
+        return stats;
+    }
+}
+
+const codeManager = new CodeManager();
+
 // ==================== FIREBASE MANAGER ====================
 class FirebaseManager {
     constructor() {
         if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
         this.db = firebase.database();
+        this.initAutoReset();
     }
 
     async loadConfig() {
@@ -91,11 +253,66 @@ class FirebaseManager {
             exchange_rate: saved.exchange_rate || DEFAULT_CONFIG.exchange_rate,
             starColor: saved.starColor || DEFAULT_CONFIG.starColor,
             bgColor1: saved.bgColor1 || DEFAULT_CONFIG.bgColor1,
-            bgColor2: saved.bgColor2 || DEFAULT_CONFIG.bgColor2
+            bgColor2: saved.bgColor2 || DEFAULT_CONFIG.bgColor2,
+            linkTypes: saved.linkTypes || DEFAULT_CONFIG.linkTypes,
+            autoResetHour: saved.autoResetHour || DEFAULT_CONFIG.autoResetHour
         };
     }
 
-    // ===== THÊM MỚI: Lưu lịch sử giao dịch =====
+    // ===== TỰ ĐỘNG RESET LÚC 3H SÁNG =====
+    initAutoReset() {
+        setInterval(() => {
+            this.checkAndReset();
+        }, 60000); // Kiểm tra mỗi phút
+    }
+
+    async checkAndReset() {
+        const now = new Date();
+        const hour = now.getHours();
+        const resetHour = CONFIG.autoResetHour || 3;
+
+        const lastResetSnap = await this.db.ref('system/lastReset').once('value');
+        const lastReset = lastResetSnap.val() || '';
+        const today = now.toDateString();
+
+        if (hour === resetHour && lastReset !== today) {
+            await this.resetDaily();
+            await this.db.ref('system/lastReset').set(today);
+            console.log('✅ Auto reset completed at 3 AM');
+        }
+    }
+
+    async resetDaily() {
+        // Reset tiến độ user
+        const usersSnap = await this.db.ref('users').once('value');
+        const users = usersSnap.val() || {};
+        const today = new Date().toDateString();
+        
+        const updates = {};
+        for (let uid of Object.keys(users)) {
+            updates[`user_links/${uid}/${today}`] = {};
+        }
+        await this.db.ref().update(updates);
+
+        // Reset mã
+        const snap = await this.db.ref('code_file/codes').once('value');
+        const codes = snap.val() || {};
+        const resetUpdates = {};
+        for (let code of Object.keys(codes)) {
+            resetUpdates[`code_file/codes/${code}/usedCount`] = 0;
+        }
+        await this.db.ref().update(resetUpdates);
+
+        // Ghi log
+        await this.db.ref('import_logs').push({
+            type: 'auto_reset',
+            importedAt: Date.now(),
+            status: 'success',
+            message: 'Tự động reset lúc 3h sáng'
+        });
+    }
+
+    // ===== Lưu lịch sử giao dịch =====
     async addTransactionHistory(uid, type, amount, detail = '') {
         const ref = this.db.ref('transactions/' + uid).push();
         await ref.set({
@@ -104,6 +321,118 @@ class FirebaseManager {
             detail: detail,
             timestamp: firebase.database.ServerValue.TIMESTAMP
         });
+    }
+
+    // ===== Lấy danh sách loại link =====
+    async getLinkTypes() {
+        const snap = await this.db.ref('admin_config/linkTypes').once('value');
+        return snap.val() || CONFIG.linkTypes || {};
+    }
+
+    // ===== Lấy link theo loại =====
+    async getLinkByType(uid, typeId) {
+        const user = await this.getUser(uid);
+        if (!user) return { error: 'Không tìm thấy user!' };
+
+        const linkTypes = await this.getLinkTypes();
+        const linkType = linkTypes[typeId];
+        if (!linkType || !linkType.active) {
+            return { error: 'Loại link không tồn tại hoặc đã bị vô hiệu hóa!' };
+        }
+
+        // Kiểm tra cooldown
+        if (user.lastCodeTime && Date.now() - user.lastCodeTime < CONFIG.linkCooldown) {
+            const left = Math.ceil((CONFIG.linkCooldown - (Date.now() - user.lastCodeTime)) / 60000);
+            return { error: `⏳ Vui lòng đợi ${left} phút nữa để lấy link tiếp!` };
+        }
+
+        // Kiểm tra lượt còn lại
+        const today = new Date().toDateString();
+        const progressSnap = await this.db.ref('user_links/' + uid + '/' + today + '/' + typeId).once('value');
+        const used = progressSnap.val() || 0;
+        const max = linkType.maxPerDay;
+
+        if (used >= max) {
+            return { 
+                error: `Bạn đã hết lượt ${linkType.name} hôm nay! (${used}/${max})`,
+                progress: used,
+                max: max
+            };
+        }
+
+        // Lấy mã từ code_file
+        const codeData = await codeManager.getCodeByType(typeId);
+        if (!codeData) {
+            return { 
+                error: `Hết mã cho ${linkType.name}! Vui lòng đợi Admin thêm mã mới.`,
+                progress: used,
+                max: max
+            };
+        }
+
+        // Đánh dấu mã đã dùng
+        await codeManager.markCodeFileUsed(codeData.code);
+
+        // Tạo link hoàn chỉnh
+        const finalLink = linkType.url.replace(/{code}/g, codeData.code);
+
+        // Cập nhật tiến độ user
+        await this.db.ref('user_links/' + uid + '/' + today + '/' + typeId).set(used + 1);
+        
+        // Cập nhật lastCodeTime
+        await this.updateUser(uid, { lastCodeTime: Date.now() });
+
+        // Ghi log
+        await this.addTransactionHistory(uid, 'task', 100, `Vượt link ${linkType.name}: ${codeData.code}`);
+
+        return {
+            success: true,
+            link: finalLink,
+            code: codeData.code,
+            type: linkType.name,
+            progress: used + 1,
+            max: max,
+            remaining: max - (used + 1),
+            icon: linkType.icon || '🔗',
+            color: linkType.color || '#5f91ff'
+        };
+    }
+
+    // ===== Lấy tiến độ của user theo ngày =====
+    async getUserLinkProgress(uid) {
+        const today = new Date().toDateString();
+        const snap = await this.db.ref('user_links/' + uid + '/' + today).once('value');
+        return snap.val() || {};
+    }
+
+    // ===== THÊM LOẠI LINK MỚI =====
+    async addLinkType(id, data) {
+        await this.db.ref('admin_config/linkTypes/' + id).set(data);
+        CONFIG.linkTypes[id] = data;
+        return true;
+    }
+
+    // ===== XÓA LOẠI LINK =====
+    async deleteLinkType(id) {
+        await this.db.ref('admin_config/linkTypes/' + id).remove();
+        delete CONFIG.linkTypes[id];
+        return true;
+    }
+
+    // ===== CẬP NHẬT LOẠI LINK =====
+    async updateLinkType(id, data) {
+        await this.db.ref('admin_config/linkTypes/' + id).update(data);
+        CONFIG.linkTypes[id] = { ...CONFIG.linkTypes[id], ...data };
+        return true;
+    }
+
+    // ===== TẠO ID TỪ TÊN =====
+    generateId(name) {
+        return name.toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]/g, '')
+            .trim();
     }
 
     async createUser(uid, data) {
@@ -137,7 +466,6 @@ class FirebaseManager {
         return uid === '5852621653' || uid === ' ';
     }
 
-    // ===== SỬA: Thêm log =====
     async dailyCheckin(uid) {
         const user = await this.getUser(uid);
         const today = new Date().toDateString();
@@ -171,10 +499,19 @@ class FirebaseManager {
         return { id: taskId, ...task };
     }
 
-    // ===== SỬA: Thêm log =====
+    // ===== SỬA: verifyCode có kiểm tra code_usage =====
     async verifyCode(uid, code) {
         if (!rateLimiter.check(`verify_${uid}`, 5, 60000)) {
             return { status: 'error', message: 'Bạn đã gửi quá nhiều yêu cầu, vui lòng đợi!' };
+        }
+
+        // Kiểm tra mã với CodeManager
+        const codeCheck = await codeManager.checkCode(uid, code);
+        if (!codeCheck.valid) {
+            return { 
+                status: 'used', 
+                message: `⚠️ Mã "${code}" đã được sử dụng. Vui lòng thử mã khác!`
+            };
         }
 
         const tasks = await this.getTasks();
@@ -233,16 +570,24 @@ class FirebaseManager {
             codesToday: today,
             codesCountToday: codesToday + 1
         });
+        
+        // Đánh dấu mã đã dùng trong code_usage
+        await codeManager.markCodeUsed(uid, code);
+        
         await this.addTransactionHistory(uid, 'task', reward, `Vượt link: ${code}`);
         await this.updateLeaderboard(uid, (user.totalLinksWeekly || 0) + 1);
 
-        if (isTool) {
-            return { status: 'ok', reward, warning: 'Cảnh báo: Bạn đã nhập mã quá nhanh!' };
+        let message = `+${reward} 🪙! Mã "${code}" hợp lệ!`;
+        if (!codeCheck.isNew && codeCheck.canReuse) {
+            message = `+${reward} 🪙! 🔄 Chúc mừng! Bạn đã nhận thưởng từ mã "${code}"!`;
         }
-        return { status: 'ok', reward };
+
+        if (isTool) {
+            return { status: 'ok', reward, warning: 'Cảnh báo: Bạn đã nhập mã quá nhanh!', message };
+        }
+        return { status: 'ok', reward, message };
     }
 
-    // ===== SỬA: Thêm log =====
     async openChest(uid) {
         const user = await this.getUser(uid);
         const completedLinks = user.completedLinks || 0;
@@ -262,7 +607,6 @@ class FirebaseManager {
         return { status: 'ok', reward };
     }
 
-    // ===== SỬA: Thêm log =====
     async addFriend(uid, friendId) {
         if (uid === friendId) return { status: 'error', message: 'Không thể tự mời chính mình!' };
         
@@ -286,7 +630,6 @@ class FirebaseManager {
         return { status: 'ok', count: friends.length };
     }
 
-    // ===== SỬA: Thêm log =====
     async redeemGiftCode(uid, code) {
         const snap = await this.db.ref('gift_codes/' + code).once('value');
         if (!snap.exists()) return { status: 'invalid' };
@@ -303,7 +646,6 @@ class FirebaseManager {
         return { status: 'ok', reward: gift.reward };
     }
 
-    // ===== SỬA: Thêm log =====
     async requestWithdraw(uid, data) {
         const user = await this.getUser(uid);
         const amount = parseInt(data.amount);
@@ -335,7 +677,6 @@ class FirebaseManager {
         return arr;
     }
 
-    // ===== THÊM MỚI: Lấy lịch sử giao dịch của 1 user =====
     async getTransactionHistory(uid, limit = 200) {
         const snap = await this.db.ref('transactions/' + uid)
             .orderByChild('timestamp')
@@ -444,6 +785,7 @@ class FirebaseManager {
 const FB = new FirebaseManager();
 
 // ==================== CÁC TRANG ====================
+// ===== HOME PAGE (Giữ nguyên) =====
 class HomePage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     render() {
@@ -480,71 +822,147 @@ class HomePage {
     }
 }
 
+// ===== TASKS PAGE (SỬA: Hiển thị nhiều loại link) =====
 class TasksPage {
-    constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
+    constructor(app, container, userData) { 
+        this.app = app; 
+        this.container = container; 
+        this.userData = userData; 
+    }
+
     async render() {
-        const completedLinks = this.userData.completedLinks || 0;
-        const progress = completedLinks % CONFIG.linksForChest;
-        const isReady = completedLinks >= CONFIG.linksForChest && progress === 0;
+        const linkTypes = await FB.getLinkTypes();
+        const userProgress = await FB.getUserLinkProgress(this.app.user.id);
         const cooldown = this.userData.lastCodeTime ? Math.max(0, CONFIG.linkCooldown - (Date.now() - this.userData.lastCodeTime)) : 0;
         const isCooldown = cooldown > 0;
+
+        let linkHTML = '';
+        let totalProgress = 0;
+        let totalMax = 0;
+
+        for (let [id, type] of Object.entries(linkTypes)) {
+            if (!type.active) continue;
+            const used = userProgress[id] || 0;
+            const max = type.maxPerDay || 0;
+            const progress = max > 0 ? (used / max) * 100 : 0;
+            const isFull = used >= max;
+            const remaining = max - used;
+            const isActive = !isFull;
+
+            totalProgress += used;
+            totalMax += max;
+
+            linkHTML += `
+                <div class="card" style="border-left: 4px solid ${type.color || '#5f91ff'};">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span style="font-size:20px;">${type.icon || '🔗'}</span>
+                            <span style="font-weight:600;font-size:16px;">${type.name}</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span style="color:${isFull ? '#ff4757' : '#2ed573'};font-weight:bold;">
+                                ${used}/${max}
+                            </span>
+                            <span style="font-size:12px;color:var(--text2);">
+                                ${isFull ? '✅ Đã max' : `⏳ Còn ${remaining}`}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="progress-bar" style="height:6px;margin-bottom:8px;">
+                        <div class="progress-fill" style="width:${progress}%;background:${type.color || '#5f91ff'};"></div>
+                    </div>
+                    <button class="btn btn-primary get-link-btn" 
+                            data-type="${id}" 
+                            style="background:${isActive && !isCooldown ? (type.color || '#5f91ff') : '#555'};cursor:${isActive && !isCooldown ? 'pointer' : 'not-allowed'};"
+                            ${isActive && !isCooldown ? '' : 'disabled'}>
+                        ${isCooldown ? `⏳ Đợi ${Math.ceil(cooldown/60000)}p` : (isActive ? `${type.icon || '🔗'} LẤY LINK` : '⛔ Hết lượt')}
+                    </button>
+                </div>
+            `;
+        }
+
         this.container.innerHTML = `
             <div class="card">
                 <div class="card-title">📋 Nhiệm vụ</div>
-                <div style="text-align:center;margin:20px 0;">
-                    <button class="btn btn-gold get-link-btn" style="padding:20px 40px;font-size:18px;border-radius:16px;margin:0 auto;display:inline-flex;align-items:center;gap:10px;" ${isCooldown ? 'disabled' : ''}>
-                        <span style="font-size:30px;">🔗</span> <span>${isCooldown ? `⏳ Đợi ${Math.ceil(cooldown/60000)}p` : 'LẤY LINK'}</span>
-                    </button>
-                </div>
-                <div style="margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1);">
-                    <p style="font-weight:bold;">🔑 Nhập mã xác nhận:</p>
-                    <input class="input" id="codeInput" placeholder="Nhập mã...">
-                    <button class="btn btn-success" id="btnVerify">✅ Xác nhận</button>
-                    ${isCooldown ? `<p style="font-size:12px;color:var(--text2);text-align:center;margin-top:8px;">⏱️ Đợi ${Math.ceil(cooldown/60000)} phút để làm nhiệm vụ tiếp</p>` : ''}
-                </div>
+                <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">
+                    📊 Hôm nay: ${totalProgress}/${totalMax} lượt đã vượt
+                    ${isCooldown ? ` ⏳ Đợi ${Math.ceil(cooldown/60000)} phút` : ''}
+                </p>
+                ${linkHTML || '<p style="text-align:center;color:var(--text2);">Chưa có loại link nào!</p>'}
+            </div>
+            <div class="card">
+                <div class="card-title">🔑 Nhập mã xác nhận</div>
+                <input class="input" id="codeInput" placeholder="Nhập mã từ link...">
+                <button class="btn btn-success" id="btnVerify">✅ Xác nhận</button>
+                <p style="font-size:12px;color:var(--text2);margin-top:8px;">
+                    📌 Nhập mã từ link đã mở để nhận thưởng
+                </p>
             </div>
             <div class="card">
                 <div class="card-title">🎁 Rương thưởng</div>
-                <div class="progress-bar"><div class="progress-fill" style="width:${(isReady ? CONFIG.linksForChest : progress) / CONFIG.linksForChest * 100}%"></div></div>
-                <p style="text-align:center;">${isReady ? CONFIG.linksForChest : progress}/${CONFIG.linksForChest}</p>
-                <button class="btn btn-gold" id="btnChest" ${isReady ? '' : 'disabled'}>🎁 Mở rương</button>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width:${((this.userData.completedLinks||0)%CONFIG.linksForChest)/CONFIG.linksForChest*100}%"></div>
+                </div>
+                <p style="text-align:center;">${(this.userData.completedLinks||0)%CONFIG.linksForChest}/${CONFIG.linksForChest}</p>
+                <button class="btn btn-gold" id="btnChest" ${(this.userData.completedLinks||0) >= CONFIG.linksForChest ? '' : 'disabled'}>🎁 Mở rương</button>
             </div>
         `;
-        const goBtn = this.container.querySelector('.get-link-btn');
-        if (goBtn && !isCooldown) {
-            goBtn.onclick = async () => {
-                goBtn.disabled = true;
-                goBtn.innerHTML = '<span style="font-size:30px;">⏳</span> <span>Đang tải...</span>';
+
+        // Gán sự kiện cho nút Lấy link
+        this.container.querySelectorAll('.get-link-btn').forEach(btn => {
+            btn.onclick = async () => {
+                const typeId = btn.dataset.type;
+                btn.disabled = true;
+                btn.innerHTML = '⏳ Đang tải...';
+                
                 try {
-                    const task = await FB.getRandomTask(this.app.user.id);
-                    if (task) {
+                    const result = await FB.getLinkByType(this.app.user.id, typeId);
+                    
+                    if (result.error) {
+                        this.app.toast(result.error, 'warning');
+                        btn.innerHTML = `${result.icon || '🔗'} LẤY LINK`;
+                        btn.disabled = false;
+                        return;
+                    }
+
+                    if (result.success) {
                         if (this.app.tg) {
-                            this.app.tg.openLink(task.link);
+                            this.app.tg.openLink(result.link);
                         } else {
-                            window.open(task.link, '_blank');
+                            window.open(result.link, '_blank');
                         }
-                        this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
-                    } else {
-                        this.app.toast('Hết link! Admin đang thêm link mới...', 'warning');
+                        
+                        this.app.toast(`✅ Đã mở link ${result.type}! (${result.progress}/${result.max})`, 'success');
+                        this.app.refreshUserBar();
+                        await this.render();
                     }
                 } catch (error) {
+                    console.error('Get link error:', error);
                     this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
-                } finally {
-                    goBtn.innerHTML = '<span style="font-size:30px;">🔗</span> <span>LẤY LINK</span>';
-                    goBtn.disabled = false;
+                    btn.innerHTML = '🔗 LẤY LINK';
+                    btn.disabled = false;
                 }
             };
-        }
+        });
+
+        // Xác nhận mã
         this.container.querySelector('#btnVerify').onclick = async () => {
-            const code = this.container.querySelector('#codeInput').value.trim(); if (!code) return this.app.toast('Nhập mã!', 'warning');
+            const code = this.container.querySelector('#codeInput').value.trim();
+            if (!code) {
+                this.app.toast('Vui lòng nhập mã!', 'warning');
+                return;
+            }
+
             const btn = this.container.querySelector('#btnVerify');
             const originalText = btn.textContent;
             btn.textContent = '⏳ Đang xử lý...';
             btn.disabled = true;
+
             try {
                 const result = await FB.verifyCode(this.app.user.id, code);
+                
                 if (result.status === 'ok') {
-                    this.app.toast(`+${result.reward} 🪙!${result.warning ? ' ⚠️ ' + result.warning : ''}`, result.warning ? 'warning' : 'success');
+                    this.app.toast(result.message || `+${result.reward} 🪙!`, result.warning ? 'warning' : 'success');
                     this.app.refreshUserBar();
                     this.render();
                 } else if (result.status === 'cooldown') {
@@ -554,21 +972,30 @@ class TasksPage {
                     this.app.toast(result.message || 'Mã không đúng!', 'error');
                 }
             } catch (error) {
+                console.error('Verify code error:', error);
                 this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
             } finally {
                 btn.textContent = originalText;
                 btn.disabled = false;
             }
         };
-        this.container.querySelector('#btnChest').onclick = async () => { 
+
+        // Mở rương
+        this.container.querySelector('#btnChest').onclick = async () => {
             const btn = this.container.querySelector('#btnChest');
             const originalText = btn.textContent;
             btn.textContent = '⏳ Đang mở...';
             btn.disabled = true;
+            
             try {
-                const res = await FB.openChest(this.app.user.id); 
-                if (res.status === 'ok') { this.app.toast(`Nhận ${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); this.render(); } 
-                else this.app.toast(res.message, 'error');
+                const res = await FB.openChest(this.app.user.id);
+                if (res.status === 'ok') {
+                    this.app.toast(`Nhận ${res.reward} 🪙!`, 'success');
+                    this.app.refreshUserBar();
+                    this.render();
+                } else {
+                    this.app.toast(res.message, 'error');
+                }
             } catch (error) {
                 this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
             } finally {
@@ -579,6 +1006,7 @@ class TasksPage {
     }
 }
 
+// ===== FRIENDS PAGE (Giữ nguyên) =====
 class FriendsPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     render() {
@@ -602,6 +1030,7 @@ class FriendsPage {
     }
 }
 
+// ===== LEADERBOARD PAGE (Giữ nguyên) =====
 class LeaderboardPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; this.countdownInterval = null; }
     
@@ -676,6 +1105,7 @@ class LeaderboardPage {
     }
 }
 
+// ===== PVP PAGE (Giữ nguyên) =====
 class PvPPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     render() {
@@ -686,6 +1116,7 @@ class PvPPage {
     async joinRoom(bet) { this.app.toast(`Vào phòng ${bet.toLocaleString()} 🪙. Đang tìm đối thủ...`, 'info'); }
 }
 
+// ===== ACCOUNT PAGE (Giữ nguyên) =====
 class AccountPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     async render() {
@@ -795,7 +1226,7 @@ class AccountPage {
     }
 }
 
-// ==================== ADMIN PAGE (ĐÃ SỬA) ====================
+// ==================== ADMIN PAGE (SỬA TAB TASKS) ====================
 class AdminPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     
@@ -823,7 +1254,7 @@ class AdminPage {
                 <button class="admin-tab" data-tab="logs">📝 Log</button>
                 <button class="admin-tab" data-tab="security">🛡️ Bảo mật</button>
                 <button class="admin-tab" data-tab="theme">🎨 Giao diện</button>
-                <button class="admin-tab" data-tab="history">📊 Lịch sử</button> <!-- THÊM MỚI -->
+                <button class="admin-tab" data-tab="history">📊 Lịch sử</button>
             </div>
             <div id="adminTabContent"></div>
         `;
@@ -838,8 +1269,9 @@ class AdminPage {
     async loadTab(tab) {
         const content = document.getElementById('adminTabContent');
         
-        // ===== TAB LỊCH SỬ (THÊM MỚI) =====
+        // ===== TAB LỊCH SỬ (Giữ nguyên) =====
         if (tab === 'history') {
+            // ... giữ nguyên code history ...
             content.innerHTML = `
                 <div class="card">
                     <div class="card-title">📊 Lịch sử giao dịch của User</div>
@@ -867,13 +1299,11 @@ class AdminPage {
                 btn.disabled = true;
 
                 try {
-                    // Kiểm tra user tồn tại
                     const user = await FB.getUser(uid);
                     if (!user) {
                         document.getElementById('historyResult').innerHTML = `
                             <div class="card" style="border-color:#ff4757;">
                                 <p style="color:#ff4757;">❌ Không tìm thấy user với ID: <b>${uid}</b></p>
-                                <p style="font-size:13px;color:var(--text2);">Vui lòng kiểm tra lại User ID</p>
                             </div>
                         `;
                         return;
@@ -885,31 +1315,23 @@ class AdminPage {
                         document.getElementById('historyResult').innerHTML = `
                             <div class="card">
                                 <p><b>👤 ${user.username}</b> (ID: ${uid})</p>
-                                <p>🪙 Số dư hiện tại: <b>${(user.balance || 0).toLocaleString()}</b></p>
-                                <p style="color:var(--text2);margin-top:10px;">📭 Chưa có lịch sử giao dịch</p>
+                                <p>🪙 Số dư: <b>${(user.balance || 0).toLocaleString()}</b></p>
+                                <p style="color:var(--text2);">📭 Chưa có lịch sử giao dịch</p>
                             </div>
                         `;
                         return;
                     }
 
-                    // Tính tổng nhận và chi
-                    let totalIn = 0;
-                    let totalOut = 0;
+                    let totalIn = 0, totalOut = 0;
                     const typeLabels = {
-                        'daily': '📅 Điểm danh',
-                        'task': '🔗 Vượt link',
-                        'chest': '🎁 Mở rương',
-                        'gift': '🎫 Gift Code',
-                        'friend': '👥 Mời bạn',
-                        'withdraw': '💸 Rút xu'
+                        'daily': '📅 Điểm danh', 'task': '🔗 Vượt link',
+                        'chest': '🎁 Mở rương', 'gift': '🎫 Gift Code',
+                        'friend': '👥 Mời bạn', 'withdraw': '💸 Rút xu'
                     };
                     const typeColors = {
-                        'daily': '#2ed573',
-                        'task': '#5f91ff',
-                        'chest': '#ffd700',
-                        'gift': '#ff6b81',
-                        'friend': '#a29bfe',
-                        'withdraw': '#ff4757'
+                        'daily': '#2ed573', 'task': '#5f91ff',
+                        'chest': '#ffd700', 'gift': '#ff6b81',
+                        'friend': '#a29bfe', 'withdraw': '#ff4757'
                     };
 
                     history.forEach(h => {
@@ -919,77 +1341,388 @@ class AdminPage {
 
                     let html = `
                         <div class="card">
-                            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-                                <div>
-                                    <p style="font-size:18px;font-weight:bold;">👤 ${user.username}</p>
-                                    <p style="font-size:13px;color:var(--text2);">🆔 ${uid}</p>
-                                </div>
-                                <div style="text-align:right;">
-                                    <p>🪙 Số dư: <b style="color:#ffd700;font-size:20px;">${(user.balance || 0).toLocaleString()}</b></p>
-                                </div>
+                            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;">
+                                <div><p style="font-weight:bold;">👤 ${user.username}</p><p style="font-size:13px;color:var(--text2);">🆔 ${uid}</p></div>
+                                <div><p>🪙 Số dư: <b style="color:#ffd700;">${(user.balance || 0).toLocaleString()}</b></p></div>
                             </div>
-                            <div style="display:flex;gap:20px;margin-top:10px;flex-wrap:wrap;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);">
-                                <span style="color:#2ed573;">📈 Tổng nhận: <b>+${totalIn.toLocaleString()}</b></span>
-                                <span style="color:#ff4757;">📉 Tổng chi: <b>-${totalOut.toLocaleString()}</b></span>
-                                <span style="color:#5f91ff;">📊 Giao dịch: <b>${history.length}</b></span>
+                            <div style="display:flex;gap:16px;flex-wrap:wrap;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);">
+                                <span style="color:#2ed573;">📈 Nhận: +${totalIn.toLocaleString()}</span>
+                                <span style="color:#ff4757;">📉 Chi: -${totalOut.toLocaleString()}</span>
+                                <span style="color:#5f91ff;">📊 ${history.length} giao dịch</span>
                             </div>
                         </div>
                         <div class="card">
-                            <div class="card-title">📋 Chi tiết giao dịch</div>
-                            <div style="max-height:500px;overflow-y:auto;">
+                            <div class="card-title">📋 Chi tiết</div>
+                            <div style="max-height:400px;overflow-y:auto;">
                     `;
 
-                    history.forEach((h, index) => {
-                        const typeLabel = typeLabels[h.type] || h.type;
-                        const color = typeColors[h.type] || '#ffffff';
+                    history.forEach((h, i) => {
+                        const bg = i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.06)';
+                        const color = typeColors[h.type] || '#fff';
                         const sign = h.amount >= 0 ? '+' : '';
                         const date = h.timestamp ? new Date(h.timestamp).toLocaleString('vi-VN') : 'N/A';
-                        const bgColor = index % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.06)';
                         
                         html += `
-                            <div style="padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.05);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;background:${bgColor};border-radius:4px;margin-bottom:2px;">
-                                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                                    <span style="color:${color};font-weight:600;font-size:14px;">${typeLabel}</span>
-                                    <span style="font-size:12px;color:var(--text2);">${h.detail || ''}</span>
-                                </div>
-                                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                                    <span style="color:${h.amount >= 0 ? '#2ed573' : '#ff4757'};font-weight:bold;font-size:15px;">
-                                        ${sign}${h.amount.toLocaleString()} 🪙
-                                    </span>
-                                    <span style="font-size:11px;color:var(--text2);">${date}</span>
-                                </div>
+                            <div style="padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.05);display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;background:${bg};">
+                                <div><span style="color:${color};">${typeLabels[h.type] || h.type}</span> <span style="font-size:12px;color:var(--text2);">${h.detail || ''}</span></div>
+                                <div><span style="color:${h.amount >= 0 ? '#2ed573' : '#ff4757'};font-weight:bold;">${sign}${h.amount.toLocaleString()}🪙</span> <span style="font-size:10px;color:var(--text2);">${date}</span></div>
                             </div>
                         `;
                     });
 
-                    html += `
-                            </div>
-                        </div>
-                    `;
+                    html += `</div></div>`;
                     document.getElementById('historyResult').innerHTML = html;
 
                 } catch (error) {
-                    console.error('Load history error:', error);
-                    document.getElementById('historyResult').innerHTML = `
-                        <div class="card" style="border-color:#ff4757;">
-                            <p style="color:#ff4757;">❌ Có lỗi xảy ra khi tải lịch sử</p>
-                            <p style="font-size:13px;color:var(--text2);">Vui lòng thử lại sau</p>
-                        </div>
-                    `;
+                    document.getElementById('historyResult').innerHTML = `<div class="card"><p style="color:#ff4757;">❌ Lỗi tải lịch sử</p></div>`;
                 } finally {
                     btn.textContent = originalText;
                     btn.disabled = false;
                 }
             };
 
-            // Cho phép bấm Enter để tìm
             document.getElementById('searchHistoryUser').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    document.getElementById('searchHistoryBtn').click();
-                }
+                if (e.key === 'Enter') document.getElementById('searchHistoryBtn').click();
             });
         }
-        // ===== CÁC TAB CŨ GIỮ NGUYÊN =====
+        
+        // ===== TAB TASKS (SỬA: Thêm quản lý loại link & import ma.txt) =====
+        else if (tab === 'tasks') {
+            const linkTypes = await FB.getLinkTypes();
+            const codeStats = await codeManager.getCodeStats();
+            const codeFile = await FB.db.ref('code_file/codes').once('value');
+            const codes = codeFile.val() || {};
+            const importLogsSnap = await FB.db.ref('import_logs').orderByChild('importedAt').limitToLast(10).once('value');
+            const importLogs = [];
+            importLogsSnap.forEach(c => importLogs.push({ id: c.key, ...c.val() }));
+            importLogs.reverse();
+
+            content.innerHTML = `
+                <h3>📋 QUẢN LÝ NHIỆM VỤ & LINK</h3>
+                
+                <!-- Thống kê -->
+                <div class="grid-3" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
+                    <div class="stat-card"><div class="stat-value">${codeStats.total || 0}</div><div class="stat-label">📝 Tổng mã</div></div>
+                    <div class="stat-card"><div class="stat-value">${codeStats.used || 0}</div><div class="stat-label">✅ Đã dùng</div></div>
+                    <div class="stat-card"><div class="stat-value">${codeStats.available || 0}</div><div class="stat-label">⏳ Còn lại</div></div>
+                </div>
+
+                <!-- Thống kê theo loại -->
+                <div class="card">
+                    <div class="card-title">📊 Thống kê theo loại</div>
+                    ${Object.entries(codeStats.byType || {}).map(([typeId, stats]) => `
+                        <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+                            <span>${linkTypes[typeId]?.icon || '🔗'} ${linkTypes[typeId]?.name || typeId}</span>
+                            <span>Tổng: ${stats.total} | Đã dùng: ${stats.used} | Còn: ${stats.available}</span>
+                        </div>
+                    `).join('') || '<p style="color:var(--text2);">Chưa có dữ liệu</p>'}
+                </div>
+
+                <!-- IMPORT FILE MA.TXT -->
+                <div class="card" style="border:2px solid #ffd700;">
+                    <div class="card-title" style="color:#ffd700;">📥 IMPORT FILE MA.TXT</div>
+                    <p style="font-size:13px;color:var(--text2);margin-bottom:8px;">
+                        File ma.txt chỉ chứa danh sách mã, mỗi dòng 1 mã. Hệ thống sẽ tự động thêm vào loại link mặc định.
+                    </p>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <input type="file" id="maFileInput" accept=".txt" style="display:none;">
+                        <button class="btn btn-primary" id="chooseMaFile" style="width:auto;">📁 Chọn file ma.txt</button>
+                        <button class="btn btn-success" id="importMaFile" style="width:auto;display:none;">📥 Import</button>
+                        <button class="btn btn-danger" id="cancelImport" style="width:auto;display:none;">❌ Hủy</button>
+                        <select class="input" id="importType" style="width:auto;display:none;margin-bottom:0;">
+                            ${Object.entries(linkTypes).map(([id, type]) => `
+                                <option value="${id}">${type.icon || '🔗'} ${type.name}</option>
+                            `).join('')}
+                        </select>
+                    </div>
+                    <div id="filePreview" style="margin-top:10px;display:none;background:rgba(255,255,255,0.05);padding:10px;border-radius:8px;max-height:200px;overflow-y:auto;">
+                        <p style="font-size:12px;color:var(--text2);">📋 Xem trước nội dung file:</p>
+                        <pre id="fileContentPreview" style="font-size:11px;color:#fff;white-space:pre-wrap;word-break:break-all;"></pre>
+                    </div>
+                    <p style="font-size:12px;color:var(--text2);margin-top:8px;">
+                        ⚠️ Import sẽ xóa tất cả mã cũ và thay thế bằng mã mới từ file!
+                    </p>
+                </div>
+
+                <!-- QUẢN LÝ LOẠI LINK -->
+                <div class="card">
+                    <div class="card-title">🔗 Quản lý loại link</div>
+                    
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+                        <input class="input" id="newLinkName" placeholder="Tên loại (VD: Link5m)" style="margin-bottom:0;">
+                        <input class="input" id="newLinkId" placeholder="ID (tự động)" style="margin-bottom:0;color:var(--text2);" readonly>
+                        <input class="input" id="newLinkMax" type="number" placeholder="Số lượt/ngày" style="margin-bottom:0;">
+                        <input class="input" id="newLinkIcon" placeholder="Icon (VD: 🔗)" style="margin-bottom:0;">
+                        <input class="input" id="newLinkColor" type="color" value="#5f91ff" style="margin-bottom:0;padding:4px;height:40px;">
+                        <input class="input" id="newLinkUrl" placeholder="URL nguồn (có {code})" style="margin-bottom:0;">
+                        <select class="input" id="newLinkStatus" style="margin-bottom:0;">
+                            <option value="true">🟢 Hoạt động</option>
+                            <option value="false">🔴 Tạm dừng</option>
+                        </select>
+                        <button class="btn btn-success" id="addLinkType">➕ Thêm loại</button>
+                    </div>
+
+                    ${Object.entries(linkTypes).map(([id, type]) => `
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;border-left:4px solid ${type.color || '#5f91ff'};">
+                            <div>
+                                <span>${type.icon || '🔗'} <b>${type.name}</b></span>
+                                <span style="font-size:12px;color:var(--text2);margin-left:8px;">${type.maxPerDay} lượt/ngày</span>
+                                <span style="font-size:12px;color:${type.active ? '#2ed573' : '#ff4757'};margin-left:8px;">${type.active ? '🟢 Hoạt động' : '🔴 Tạm dừng'}</span>
+                            </div>
+                            <div>
+                                <button class="btn-sm btn-primary editLinkType" data-id="${id}">✏️</button>
+                                <button class="btn-sm btn-danger deleteLinkType" data-id="${id}">🗑️</button>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+
+                <!-- DANH SÁCH MÃ -->
+                <div class="card">
+                    <div class="card-title">📋 Danh sách mã (${Object.keys(codes).length})</div>
+                    <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+                        <input class="input" id="searchCode" placeholder="Tìm mã..." style="margin-bottom:0;flex:1;min-width:150px;">
+                        <select class="input" id="filterCodeType" style="margin-bottom:0;width:auto;">
+                            <option value="all">Tất cả loại</option>
+                            ${Object.entries(linkTypes).map(([id, type]) => `
+                                <option value="${id}">${type.icon || '🔗'} ${type.name}</option>
+                            `).join('')}
+                        </select>
+                    </div>
+                    <div id="codeList" style="max-height:300px;overflow-y:auto;">
+                        ${Object.entries(codes).slice(0, 50).map(([code, c]) => `
+                            <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <div>
+                                    <span style="font-weight:bold;">${code}</span>
+                                    <span style="font-size:12px;color:var(--text2);margin-left:8px;">
+                                        ${linkTypes[c.type]?.icon || '🔗'} ${linkTypes[c.type]?.name || c.type}
+                                    </span>
+                                    <span style="font-size:12px;color:${c.usedCount < c.maxUses ? '#2ed573' : '#ff4757'};margin-left:8px;">
+                                        ${c.usedCount}/${c.maxUses}
+                                    </span>
+                                </div>
+                                <button class="btn-sm btn-danger deleteCode" data-code="${code}">🗑️</button>
+                            </div>
+                        `).join('')}
+                        ${Object.keys(codes).length > 50 ? `<p style="text-align:center;color:var(--text2);font-size:12px;">Hiển thị 50/${Object.keys(codes).length} mã</p>` : ''}
+                        ${Object.keys(codes).length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có mã nào</p>' : ''}
+                    </div>
+                </div>
+
+                <!-- LỊCH SỬ IMPORT -->
+                <div class="card">
+                    <div class="card-title">📥 Lịch sử import</div>
+                    ${importLogs.map(log => `
+                        <div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;">
+                            ${log.status === 'success' ? '✅' : '❌'} 
+                            ${new Date(log.importedAt).toLocaleString('vi-VN')} - 
+                            ${log.fileName || 'ma.txt'} - ${log.totalCodes || 0} mã
+                            ${log.message ? `- ${log.message}` : ''}
+                        </div>
+                    `).join('') || '<p style="color:var(--text2);">Chưa có lịch sử import</p>'}
+                </div>
+            `;
+
+            // ===== SỰ KIỆN: TỰ ĐỘNG TẠO ID =====
+            document.getElementById('newLinkName').oninput = function() {
+                const id = FB.generateId(this.value);
+                document.getElementById('newLinkId').value = id;
+            };
+
+            // ===== SỰ KIỆN: CHỌN FILE =====
+            document.getElementById('chooseMaFile').onclick = () => {
+                document.getElementById('maFileInput').click();
+            };
+
+            document.getElementById('maFileInput').onchange = function(e) {
+                const file = this.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    const content = event.target.result;
+                    document.getElementById('fileContentPreview').textContent = content;
+                    document.getElementById('filePreview').style.display = 'block';
+                    document.getElementById('importMaFile').style.display = 'inline-block';
+                    document.getElementById('cancelImport').style.display = 'inline-block';
+                    document.getElementById('importType').style.display = 'inline-block';
+                    document.getElementById('chooseMaFile').style.display = 'none';
+                    document.getElementById('importMaFile').dataset.content = content;
+                };
+                reader.readAsText(file);
+            };
+
+            document.getElementById('cancelImport').onclick = () => {
+                document.getElementById('filePreview').style.display = 'none';
+                document.getElementById('importMaFile').style.display = 'none';
+                document.getElementById('cancelImport').style.display = 'none';
+                document.getElementById('importType').style.display = 'none';
+                document.getElementById('chooseMaFile').style.display = 'inline-block';
+                document.getElementById('maFileInput').value = '';
+            };
+
+            // ===== SỰ KIỆN: IMPORT FILE =====
+            document.getElementById('importMaFile').onclick = async () => {
+                const content = document.getElementById('importMaFile').dataset.content;
+                const typeId = document.getElementById('importType').value || 'link4m';
+                if (!content) return;
+
+                if (!confirm('⚠️ Import sẽ XÓA TẤT CẢ mã cũ và thay thế bằng mã mới. Bạn có chắc chắn?')) return;
+
+                const btn = document.getElementById('importMaFile');
+                const originalText = btn.textContent;
+                btn.textContent = '⏳ Đang import...';
+                btn.disabled = true;
+
+                try {
+                    const result = await codeManager.importMaFile(content, typeId);
+                    
+                    await FB.db.ref('code_file/codes').remove();
+                    
+                    const updates = {};
+                    for (let [code, data] of Object.entries(result.codes)) {
+                        updates[`code_file/codes/${code}`] = data;
+                    }
+                    await FB.db.ref().update(updates);
+
+                    await FB.db.ref('import_logs').push({
+                        fileName: 'ma.txt',
+                        totalCodes: result.totalCodes,
+                        importedAt: Date.now(),
+                        status: 'success',
+                        type: typeId
+                    });
+
+                    this.app.toast(`✅ Import thành công! Đã thêm ${result.totalCodes} mã.`, 'success');
+                    
+                    document.getElementById('filePreview').style.display = 'none';
+                    document.getElementById('importMaFile').style.display = 'none';
+                    document.getElementById('cancelImport').style.display = 'none';
+                    document.getElementById('importType').style.display = 'none';
+                    document.getElementById('chooseMaFile').style.display = 'inline-block';
+                    document.getElementById('maFileInput').value = '';
+                    
+                    this.loadTab('tasks');
+                } catch (error) {
+                    console.error('Import error:', error);
+                    this.app.toast('❌ Có lỗi xảy ra khi import!', 'error');
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
+            };
+
+            // ===== SỰ KIỆN: THÊM LOẠI LINK =====
+            document.getElementById('addLinkType').onclick = async () => {
+                const name = document.getElementById('newLinkName').value.trim();
+                const id = document.getElementById('newLinkId').value.trim() || FB.generateId(name);
+                const maxPerDay = parseInt(document.getElementById('newLinkMax').value);
+                const icon = document.getElementById('newLinkIcon').value.trim() || '🔗';
+                const color = document.getElementById('newLinkColor').value;
+                const url = document.getElementById('newLinkUrl').value.trim();
+                const active = document.getElementById('newLinkStatus').value === 'true';
+
+                if (!name || !url || !maxPerDay) {
+                    this.app.toast('Vui lòng điền đầy đủ thông tin!', 'warning');
+                    return;
+                }
+
+                // Kiểm tra ID trùng
+                const existing = await FB.getLinkTypes();
+                if (existing[id]) {
+                    this.app.toast(`ID "${id}" đã tồn tại!`, 'error');
+                    return;
+                }
+
+                const newType = { name, maxPerDay, icon, color, url, active };
+                await FB.addLinkType(id, newType);
+                this.app.toast(`✅ Đã thêm loại link "${name}"!`, 'success');
+                this.loadTab('tasks');
+            };
+
+            // ===== SỰ KIỆN: XÓA LOẠI LINK =====
+            document.querySelectorAll('.deleteLinkType').forEach(btn => {
+                btn.onclick = async () => {
+                    const id = btn.dataset.id;
+                    const type = (await FB.getLinkTypes())[id];
+                    if (!confirm(`Xóa loại link "${type?.name || id}"?`)) return;
+                    await FB.deleteLinkType(id);
+                    this.app.toast('Đã xóa!', 'success');
+                    this.loadTab('tasks');
+                };
+            });
+
+            // ===== SỰ KIỆN: SỬA LOẠI LINK =====
+            document.querySelectorAll('.editLinkType').forEach(btn => {
+                btn.onclick = () => {
+                    const id = btn.dataset.id;
+                    const type = CONFIG.linkTypes[id];
+                    if (!type) return;
+                    
+                    document.getElementById('newLinkName').value = type.name;
+                    document.getElementById('newLinkId').value = id;
+                    document.getElementById('newLinkMax').value = type.maxPerDay;
+                    document.getElementById('newLinkIcon').value = type.icon || '🔗';
+                    document.getElementById('newLinkColor').value = type.color || '#5f91ff';
+                    document.getElementById('newLinkUrl').value = type.url || '';
+                    document.getElementById('newLinkStatus').value = type.active ? 'true' : 'false';
+                    
+                    document.getElementById('addLinkType').textContent = '💾 Cập nhật';
+                    document.getElementById('addLinkType').dataset.editId = id;
+                    
+                    document.getElementById('addLinkType').onclick = async () => {
+                        const name = document.getElementById('newLinkName').value.trim();
+                        const editId = document.getElementById('addLinkType').dataset.editId;
+                        const maxPerDay = parseInt(document.getElementById('newLinkMax').value);
+                        const icon = document.getElementById('newLinkIcon').value.trim() || '🔗';
+                        const color = document.getElementById('newLinkColor').value;
+                        const url = document.getElementById('newLinkUrl').value.trim();
+                        const active = document.getElementById('newLinkStatus').value === 'true';
+
+                        if (!name || !url || !maxPerDay) {
+                            this.app.toast('Vui lòng điền đầy đủ!', 'warning');
+                            return;
+                        }
+
+                        await FB.updateLinkType(editId, { name, maxPerDay, icon, color, url, active });
+                        this.app.toast(`✅ Đã cập nhật "${name}"!`, 'success');
+                        document.getElementById('addLinkType').textContent = '➕ Thêm loại';
+                        delete document.getElementById('addLinkType').dataset.editId;
+                        this.loadTab('tasks');
+                    };
+                };
+            });
+
+            // ===== SỰ KIỆN: XÓA MÃ =====
+            document.querySelectorAll('.deleteCode').forEach(btn => {
+                btn.onclick = async () => {
+                    const code = btn.dataset.code;
+                    if (!confirm(`Xóa mã "${code}"?`)) return;
+                    await FB.db.ref('code_file/codes/' + code).remove();
+                    this.app.toast('Đã xóa mã!', 'success');
+                    this.loadTab('tasks');
+                };
+            });
+
+            // ===== SỰ KIỆN: TÌM KIẾM MÃ =====
+            document.getElementById('searchCode').oninput = function() {
+                const keyword = this.value.toLowerCase();
+                const typeFilter = document.getElementById('filterCodeType').value;
+                const items = document.querySelectorAll('#codeList > div');
+                items.forEach(item => {
+                    const text = item.textContent.toLowerCase();
+                    const type = item.dataset.type || '';
+                    const show = text.includes(keyword) && (typeFilter === 'all' || type === typeFilter);
+                    item.style.display = show ? 'flex' : 'none';
+                });
+            };
+
+            document.getElementById('filterCodeType').onchange = function() {
+                document.getElementById('searchCode').dispatchEvent(new Event('input'));
+            };
+        }
+        
+        // ===== CÁC TAB KHÁC GIỮ NGUYÊN =====
         else if (tab === 'config') {
             // ... giữ nguyên code config ...
             const configSnap = await FB.db.ref('admin_config').once('value');
@@ -1095,56 +1828,6 @@ class AdminPage {
                     btn.disabled = false;
                 }
             };
-        }
-        else if (tab === 'tasks') {
-            const tasks = await FB.getTasks();
-            content.innerHTML = `<h3>📋 Nhiệm vụ</h3><input class="input" id="taskLink" placeholder="Link"><input class="input" id="taskCode" placeholder="Mã"><input class="input" id="taskReward" type="number" value="100" placeholder="🪙 thưởng"><input class="input" id="taskMaxUses" type="number" value="3" placeholder="Lượt dùng tối đa"><button class="btn btn-success" id="addTask">Thêm</button><div style="margin-top:10px;">${Object.entries(tasks).map(([id,t]) => `<div style="display:flex;justify-content:space-between;padding:5px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><span>${t.link?.substring(0,20)}... | ${t.code} | ${t.reward}🪙 | ${t.usedCount||0}/${t.maxUses||3} lượt</span><button class="btn-sm btn-danger" data-id="${id}">Xóa</button></div>`).join('')}</div>`;
-            document.getElementById('addTask').onclick = async () => {
-                const link = document.getElementById('taskLink').value.trim();
-                const code = document.getElementById('taskCode').value.trim();
-                const reward = parseInt(document.getElementById('taskReward').value) || 100;
-                const maxUses = parseInt(document.getElementById('taskMaxUses').value) || 3;
-                if (!link || !code) return this.app.toast('Nhập đủ!', 'warning');
-                const btn = document.getElementById('addTask');
-                const originalText = btn.textContent;
-                btn.textContent = '⏳ Đang thêm...';
-                btn.disabled = true;
-                try {
-                    await FB.db.ref('tasks').push({ link, code, reward, active: true, maxUses: maxUses, usedCount: 0 });
-                    await FB.db.ref('admin_logs').push({
-                        adminId: this.app.user.id,
-                        action: 'add_task',
-                        task: { link, code, reward, maxUses },
-                        timestamp: firebase.database.ServerValue.TIMESTAMP
-                    });
-                    this.app.toast('Đã thêm!', 'success');
-                    this.loadTab('tasks');
-                } catch (error) {
-                    this.app.toast('Có lỗi xảy ra!', 'error');
-                } finally {
-                    btn.textContent = originalText;
-                    btn.disabled = false;
-                }
-            };
-            document.querySelectorAll('.btn-danger').forEach(btn => {
-                btn.onclick = async () => {
-                    if (!confirm('Xóa nhiệm vụ này?')) return;
-                    const taskId = btn.dataset.id;
-                    try {
-                        await FB.db.ref(`tasks/${taskId}`).remove();
-                        await FB.db.ref('admin_logs').push({
-                            adminId: this.app.user.id,
-                            action: 'delete_task',
-                            taskId: taskId,
-                            timestamp: firebase.database.ServerValue.TIMESTAMP
-                        });
-                        this.app.toast('Đã xóa!', 'success');
-                        this.loadTab('tasks');
-                    } catch (error) {
-                        this.app.toast('Có lỗi xảy ra!', 'error');
-                    }
-                };
-            });
         }
         else if (tab === 'giftcodes') {
             const giftsSnap = await FB.db.ref('gift_codes').once('value');
@@ -1579,7 +2262,7 @@ class AdminPage {
     }
 }
 
-// ==================== APP CHÍNH ====================
+// ==================== APP CHÍNH (Giữ nguyên) ====================
 class CayXumMo {
     constructor() {
         this.tg = window.Telegram?.WebApp;
