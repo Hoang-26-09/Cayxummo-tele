@@ -54,13 +54,20 @@ window.onerror = function(msg, url, line) {
 
 // ==================== RATE LIMITER ====================
 class RateLimiter {
-    constructor() { this.requests = new Map(); }
+    constructor() {
+        this.requests = new Map();
+    }
+
     check(key, maxRequests = 10, timeWindow = 60000) {
         const now = Date.now();
-        if (!this.requests.has(key)) this.requests.set(key, []);
+        if (!this.requests.has(key)) {
+            this.requests.set(key, []);
+        }
         const timestamps = this.requests.get(key);
         const valid = timestamps.filter(t => now - t < timeWindow);
-        if (valid.length >= maxRequests) return false;
+        if (valid.length >= maxRequests) {
+            return false;
+        }
         valid.push(now);
         this.requests.set(key, valid);
         return true;
@@ -106,9 +113,15 @@ class FirebaseManager {
         }
     }
 
+    // ===== THÊM MỚI: Lưu lịch sử giao dịch =====
     async addTransactionHistory(uid, type, amount, detail = '') {
         const ref = this.db.ref('transactions/' + uid).push();
-        await ref.set({ type, amount, detail, timestamp: firebase.database.ServerValue.TIMESTAMP });
+        await ref.set({
+            type: type,
+            amount: amount,
+            detail: detail,
+            timestamp: firebase.database.ServerValue.TIMESTAMP
+        });
     }
 
     async createUser(uid, data) {
@@ -128,7 +141,9 @@ class FirebaseManager {
     }
 
     async getUser(uid) { return (await this.db.ref('users/' + uid).once('value')).val(); }
-    async updateUser(uid, data) { await this.db.ref('users/' + uid).update(data); }
+    async updateUser(uid, data) { 
+        await this.db.ref('users/' + uid).update(data); 
+    }
 
     async addBalance(uid, amount) {
         const ref = this.db.ref('users/' + uid + '/balance');
@@ -136,8 +151,11 @@ class FirebaseManager {
         await ref.set(Math.max(0, (snap.val() || 0) + amount));
     }
 
-    async isAdmin(uid) { return uid === '5852621653' || uid === ' '; }
+    async isAdmin(uid) {
+        return uid === '5852621653' || uid === ' ';
+    }
 
+    // ===== SỬA: Thêm log =====
     async dailyCheckin(uid) {
         const user = await this.getUser(uid);
         const today = new Date().toDateString();
@@ -150,6 +168,7 @@ class FirebaseManager {
         return { status: 'ok', streak, reward };
     }
 
+    // ===== THÊM MỚI: Hệ thống Pool Mã =====
     async getCodeFromPool(linkTypeId) {
         const poolRef = this.db.ref(`code_pools/${linkTypeId}`);
         const snap = await poolRef.once('value');
@@ -202,7 +221,38 @@ class FirebaseManager {
         return { total, available, used, expired, codes };
     }
 
-    async getRandomTask(uid, linkTypeId = null) {
+    async importCodes(linkTypeId, codesArray) {
+        const poolRef = this.db.ref(`code_pools/${linkTypeId}`);
+        const updates = {};
+        for (let code of codesArray) {
+            const trimmedCode = code.trim();
+            if (trimmedCode) updates[trimmedCode] = { used: false, usedAt: null, usedCount: 0, addedAt: Date.now() };
+        }
+        if (Object.keys(updates).length > 0) await poolRef.update(updates);
+        return Object.keys(updates).length;
+    }
+
+    async getRandomTask(uid) {
+        const tasks = await this.getTasks();
+        const user = await this.getUser(uid);
+        const usedCodes = user.codesUsed || [];
+
+        const available = Object.entries(tasks).filter(([id, t]) => {
+            if (t.active === false) return false;
+            if ((t.usedCount || 0) >= (t.maxUses || 3)) return false;
+            if (usedCodes.includes(t.code)) return false;
+            return true;
+        });
+
+        if (available.length === 0) return null;
+
+        const [taskId, task] = available[Math.floor(Math.random() * available.length)];
+        await this.updateUser(uid, { lastLinkTime: Date.now() });
+        return { id: taskId, ...task };
+    }
+
+    // ===== THÊM MỚI: Lấy link theo loại =====
+    async getRandomTaskByType(uid, linkTypeId) {
         if (!linkTypeId) return { status: 'error', message: 'Chưa chọn loại link!' };
         const linkTypeConfig = CONFIG.linkTypes[linkTypeId];
         if (!linkTypeConfig || !linkTypeConfig.active) return { status: 'error', message: 'Loại link không khả dụng!' };
@@ -219,11 +269,85 @@ class FirebaseManager {
         return { status: 'ok', code, url: finalUrl, linkType: linkTypeId, linkTypeName: linkTypeConfig.name };
     }
 
-    async verifyCode(uid, inputCode) {
-        if (!rateLimiter.check(`verify_${uid}`, 5, 60000)) return { status: 'error', message: 'Bạn đã gửi quá nhiều yêu cầu, vui lòng đợi!' };
+    async getTasks() { return (await this.db.ref('tasks').once('value')).val() || {}; }
+
+    // ===== SỬA: Thêm log =====
+    async verifyCode(uid, code) {
+        if (!rateLimiter.check(`verify_${uid}`, 5, 60000)) {
+            return { status: 'error', message: 'Bạn đã gửi quá nhiều yêu cầu, vui lòng đợi!' };
+        }
+
+        const tasks = await this.getTasks();
+        let task = null;
+        let taskId = null;
+        for (let id in tasks) {
+            if (tasks[id].code === code && tasks[id].active !== false) {
+                task = tasks[id];
+                taskId = id;
+                break;
+            }
+        }
+        if (!task) return { status: 'invalid' };
+
+        const user = await this.getUser(uid);
+        if ((user.codesUsed || []).includes(code)) return { status: 'used', message: 'Bạn đã vượt link này rồi!' };
+
+        if (user.lastCodeTime && Date.now() - user.lastCodeTime < CONFIG.linkCooldown) {
+            const left = Math.ceil((CONFIG.linkCooldown - (Date.now() - user.lastCodeTime)) / 60000);
+            return { status: 'cooldown', message: `Vui lòng đợi ${left} phút nữa` };
+        }
+
+        const today = new Date().toDateString();
+        const codesToday = user.codesToday === today ? (user.codesCountToday || 0) : 0;
+        if (codesToday >= CONFIG.maxCodesPerDay) {
+            return { status: 'limit', message: 'Bạn đã đạt giới hạn mã hôm nay!' };
+        }
+
+        const timeSinceLink = Date.now() - (user.lastLinkTime || 0);
+        let isTool = false;
+        if (user.lastLinkTime && timeSinceLink < 120000 && timeSinceLink > 0) {
+            isTool = true;
+            await this.db.ref('admin_alerts').push({
+                type: 'suspicious_speed',
+                userId: uid,
+                username: user.username,
+                code: code,
+                timeMs: timeSinceLink,
+                timestamp: Date.now(),
+                status: 'unread'
+            });
+        }
+
+        if (taskId) {
+            await this.db.ref(`tasks/${taskId}/usedCount`).set((task.usedCount || 0) + 1);
+        }
+
+        const reward = task.reward || 100;
+        await this.updateUser(uid, {
+            balance: (user.balance || 0) + reward,
+            completedLinks: (user.completedLinks || 0) + 1,
+            totalLinksWeekly: (user.totalLinksWeekly || 0) + 1,
+            totalLinksAllTime: (user.totalLinksAllTime || 0) + 1,
+            lastCodeTime: Date.now(),
+            codesUsed: [...(user.codesUsed || []), code],
+            codesToday: today,
+            codesCountToday: codesToday + 1
+        });
+        await this.addTransactionHistory(uid, 'task', reward, `Vượt link: ${code}`);
+        await this.updateLeaderboard(uid, (user.totalLinksWeekly || 0) + 1);
+
+        if (isTool) {
+            return { status: 'ok', reward, warning: 'Cảnh báo: Bạn đã nhập mã quá nhanh!' };
+        }
+        return { status: 'ok', reward };
+    }
+
+    // ===== THÊM MỚI: Xác nhận mã theo loại =====
+    async verifyCodeByType(uid, inputCode) {
+        if (!rateLimiter.check(`verify_${uid}`, 5, 60000)) return { status: 'error', message: 'Quá nhiều yêu cầu!' };
         const user = await this.getUser(uid);
         if (!user.currentTaskCode || !user.currentTaskType) return { status: 'error', message: 'Vui lòng nhấn LẤY LINK trước!' };
-        if (user.currentTaskCode !== inputCode) return { status: 'wrong', message: 'Mã không đúng! Vui lòng kiểm tra lại.' };
+        if (user.currentTaskCode !== inputCode) return { status: 'wrong', message: 'Mã không đúng!' };
         if (user.lastCodeTime && Date.now() - user.lastCodeTime < CONFIG.linkCooldown) {
             const left = Math.ceil((CONFIG.linkCooldown - (Date.now() - user.lastCodeTime)) / 60000);
             return { status: 'cooldown', message: `Vui lòng đợi ${left} phút nữa` };
@@ -235,6 +359,15 @@ class FirebaseManager {
         const dailyCountKey = `linkDaily_${linkTypeId}`;
         const dailyCountDateKey = `linkDailyDate_${linkTypeId}`;
         const countToday = (user[dailyCountDateKey] === today) ? (user[dailyCountKey] || 0) : 0;
+        const timeSinceLink = Date.now() - (user.lastLinkTime || 0);
+        let isTool = false;
+        if (user.lastLinkTime && timeSinceLink < 120000 && timeSinceLink > 0) {
+            isTool = true;
+            await this.db.ref('admin_alerts').push({
+                type: 'suspicious_speed', userId: uid, username: user.username,
+                code: inputCode, timeMs: timeSinceLink, timestamp: Date.now(), status: 'unread'
+            });
+        }
         await this.updateUser(uid, {
             balance: (user.balance || 0) + reward,
             completedLinks: (user.completedLinks || 0) + 1,
@@ -249,35 +382,37 @@ class FirebaseManager {
         });
         await this.addTransactionHistory(uid, 'task', reward, `Vượt link [${linkTypeConfig?.name || 'Mặc định'}]: ${inputCode}`);
         await this.updateLeaderboard(uid, (user.totalLinksWeekly || 0) + 1);
+        if (isTool) return { status: 'ok', reward, warning: 'Cảnh báo: Bạn đã nhập mã quá nhanh!' };
         return { status: 'ok', reward };
     }
 
-    async importCodes(linkTypeId, codesArray) {
-        const poolRef = this.db.ref(`code_pools/${linkTypeId}`);
-        const updates = {};
-        for (let code of codesArray) {
-            const trimmedCode = code.trim();
-            if (trimmedCode) updates[trimmedCode] = { used: false, usedAt: null, usedCount: 0, addedAt: Date.now() };
-        }
-        if (Object.keys(updates).length > 0) await poolRef.update(updates);
-        return Object.keys(updates).length;
-    }
-
+    // ===== SỬA: Thêm log =====
     async openChest(uid) {
         const user = await this.getUser(uid);
         const completedLinks = user.completedLinks || 0;
         const chestsCanOpen = Math.floor(completedLinks / CONFIG.linksForChest);
-        if (chestsCanOpen === 0) return { status: 'error', message: 'Chưa đủ link để mở rương!' };
+        
+        if (chestsCanOpen === 0) {
+            return { status: 'error', message: 'Chưa đủ link để mở rương!' };
+        }
+        
         const reward = CONFIG.chestRewards[Math.floor(Math.random() * CONFIG.chestRewards.length)];
-        await this.updateUser(uid, { balance: (user.balance || 0) + reward, chestsOpened: (user.chestsOpened || 0) + 1, completedLinks: completedLinks - CONFIG.linksForChest });
+        await this.updateUser(uid, {
+            balance: (user.balance || 0) + reward,
+            chestsOpened: (user.chestsOpened || 0) + 1,
+            completedLinks: completedLinks - CONFIG.linksForChest
+        });
         await this.addTransactionHistory(uid, 'chest', reward, `Mở rương nhận ${reward}🪙`);
         return { status: 'ok', reward };
     }
 
+    // ===== SỬA: Thêm log =====
     async addFriend(uid, friendId) {
         if (uid === friendId) return { status: 'error', message: 'Không thể tự mời chính mình!' };
+        
         const friendData = await this.getUser(friendId);
         if (!friendData) return { status: 'error', message: 'Người dùng không tồn tại!' };
+        
         const user = await this.getUser(uid);
         const friends = user.friends || [];
         if (friends.includes(friendId)) return { status: 'already' };
@@ -287,14 +422,15 @@ class FirebaseManager {
         for (let [k, v] of Object.entries(CONFIG.friendRewards)) {
             if (friends.length === parseInt(k)) { bonus = v; break; }
         }
-        if (bonus > 0) {
+        if (bonus > 0) { 
             await this.addBalance(uid, bonus);
             await this.addTransactionHistory(uid, 'friend', bonus, `Thưởng mời bạn (${friends.length} bạn)`);
-            return { status: 'reward', count: friends.length, bonus };
+            return { status: 'reward', count: friends.length, bonus }; 
         }
         return { status: 'ok', count: friends.length };
     }
 
+    // ===== SỬA: Thêm log =====
     async redeemGiftCode(uid, code) {
         const snap = await this.db.ref('gift_codes/' + code).once('value');
         if (!snap.exists()) return { status: 'invalid' };
@@ -311,6 +447,7 @@ class FirebaseManager {
         return { status: 'ok', reward: gift.reward };
     }
 
+    // ===== SỬA: Thêm log =====
     async requestWithdraw(uid, data) {
         const user = await this.getUser(uid);
         const amount = parseInt(data.amount);
@@ -333,14 +470,26 @@ class FirebaseManager {
         const snap = await this.db.ref('withdraw_requests').once('value');
         const all = snap.val() || {};
         const arr = [];
-        for (let key in all) { if (all[key].userId === uid) arr.push({ id: key, ...all[key] }); }
+        for (let key in all) {
+            if (all[key].userId === uid) {
+                arr.push({ id: key, ...all[key] });
+            }
+        }
         arr.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
         return arr;
     }
 
+    // ===== THÊM MỚI: Lấy lịch sử giao dịch của 1 user =====
     async getTransactionHistory(uid, limit = 200) {
-        const snap = await this.db.ref('transactions/' + uid).orderByChild('timestamp').limitToLast(limit).once('value');
-        const arr = []; snap.forEach(c => arr.push({ id: c.key, ...c.val() })); return arr.reverse();
+        const snap = await this.db.ref('transactions/' + uid)
+            .orderByChild('timestamp')
+            .limitToLast(limit)
+            .once('value');
+        const arr = [];
+        snap.forEach(c => {
+            arr.push({ id: c.key, ...c.val() });
+        });
+        return arr.reverse();
     }
 
     async updateLeaderboard(uid, links) {
@@ -355,8 +504,15 @@ class FirebaseManager {
 
     async getTopFriends(limit = 10) {
         const snap = await this.db.ref('users').orderByChild('friendsCount').limitToLast(limit).once('value');
-        const arr = [];
-        snap.forEach(c => { const u = c.val(); arr.push({ userId: c.key, username: u.username, friends: (u.friends || []).length }); });
+        const arr = []; 
+        snap.forEach(c => { 
+            const u = c.val(); 
+            arr.push({ 
+                userId: c.key, 
+                username: u.username, 
+                friends: (u.friends || []).length 
+            }); 
+        });
         return arr.reverse();
     }
 
@@ -378,7 +534,9 @@ class FirebaseManager {
         const nextSunday = new Date(now);
         nextSunday.setDate(now.getDate() + daysUntilSunday);
         nextSunday.setHours(8, 0, 0, 0);
-        if (dayOfWeek === 0 && now >= nextSunday) nextSunday.setDate(nextSunday.getDate() + 7);
+        if (dayOfWeek === 0 && now >= nextSunday) {
+            nextSunday.setDate(nextSunday.getDate() + 7);
+        }
         return nextSunday.getTime() - now.getTime();
     }
 
@@ -400,7 +558,10 @@ class FirebaseManager {
         top10.forEach((user, i) => {
             if (i < ratios.length && ratios[i] > 0) {
                 const reward = Math.floor(fund * ratios[i]);
-                if (reward > 0) { updates[`users/${user.userId}/balance`] = firebase.database.ServerValue.increment(reward); totalDistributed += reward; }
+                if (reward > 0) {
+                    updates[`users/${user.userId}/balance`] = firebase.database.ServerValue.increment(reward);
+                    totalDistributed += reward;
+                }
             }
         });
         if (totalDistributed > 0) {
@@ -410,7 +571,9 @@ class FirebaseManager {
             await this.db.ref('leaderboard').remove();
             const usersSnap = await this.db.ref('users').once('value');
             const userUpdates = {};
-            usersSnap.forEach(child => { userUpdates[`${child.key}/totalLinksWeekly`] = 0; });
+            usersSnap.forEach(child => {
+                userUpdates[`${child.key}/totalLinksWeekly`] = 0;
+            });
             await this.db.ref().update(userUpdates);
         }
     }
@@ -424,7 +587,7 @@ class FirebaseManager {
 }
 const FB = new FirebaseManager();
 
-// ==================== TRANG CHỦ ====================
+// ==================== CÁC TRANG ====================
 class HomePage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     render() {
@@ -445,26 +608,33 @@ class HomePage {
     }
     async doDaily() {
         const btn = document.getElementById('btnDaily');
-        const orig = btn.textContent;
-        btn.textContent = '⏳ Đang xử lý...'; btn.disabled = true;
+        const originalText = btn.textContent;
+        btn.textContent = '⏳ Đang xử lý...';
+        btn.disabled = true;
         try {
             const result = await FB.dailyCheckin(this.app.user.id);
             if (result.status === 'already') this.app.toast('Hôm nay bạn đã điểm danh rồi!', 'warning');
             else { this.app.toast(`+${result.reward} 🪙! Ngày ${result.streak}/7`, 'success'); this.app.refreshUserBar(); this.render(); }
-        } catch (e) { this.app.toast('Có lỗi xảy ra!', 'error'); }
-        finally { btn.textContent = orig; btn.disabled = false; }
+        } catch (error) {
+            this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
+        } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
     }
 }
 
-// ==================== TRANG NHIỆM VỤ ====================
+// ==================== TRANG NHIỆM VỤ (ĐÃ SỬA - thêm loại link) ====================
 class TasksPage {
-    constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; this.currentLinkType = null; this.currentTask = null; }
+    constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; this.currentLinkType = null; }
 
     async render() {
         const completedLinks = this.userData.completedLinks || 0;
         const progress = completedLinks % CONFIG.linksForChest;
         const isReady = completedLinks >= CONFIG.linksForChest && progress === 0;
         const activeLinkTypes = Object.entries(CONFIG.linkTypes || {}).filter(([id, cfg]) => cfg.active);
+        const cooldown = this.userData.lastCodeTime ? Math.max(0, CONFIG.linkCooldown - (Date.now() - this.userData.lastCodeTime)) : 0;
+        const isCooldown = cooldown > 0;
         let linkTypeCardsHTML = '';
 
         for (let [typeId, typeCfg] of activeLinkTypes) {
@@ -474,42 +644,31 @@ class TasksPage {
             const countToday = (this.userData[dailyCountDateKey] === today) ? (this.userData[dailyCountKey] || 0) : 0;
             const maxPerDay = typeCfg.maxPerDay || 1;
             const isFull = countToday >= maxPerDay;
-
             linkTypeCardsHTML += `
                 <div class="link-type-card" style="border-left: 4px solid ${typeCfg.color}; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 12px; margin-bottom: 15px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <div>
-                            <span style="font-size: 20px;">${typeCfg.icon || '🔗'}</span>
-                            <span style="font-weight: bold; margin-left: 8px;">${typeCfg.name}</span>
-                            <span style="font-size: 12px; color: var(--text2); margin-left: 8px;">(${countToday}/${maxPerDay} hôm nay)</span>
-                        </div>
+                        <div><span style="font-size: 20px;">${typeCfg.icon || '🔗'}</span><span style="font-weight: bold; margin-left: 8px;">${typeCfg.name}</span><span style="font-size: 12px; color: var(--text2); margin-left: 8px;">(${countToday}/${maxPerDay} hôm nay)</span></div>
                         <span style="font-size: 12px; padding: 4px 10px; border-radius: 20px; background: ${isFull ? 'rgba(255,71,87,0.2)' : 'rgba(46,213,115,0.2)'}; color: ${isFull ? '#ff4757' : '#2ed573'};">
                             ${isFull ? '⛔ Hết lượt' : `✅ Còn ${maxPerDay - countToday} lượt`}
                         </span>
                     </div>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <button class="btn btn-primary get-link-btn" data-type="${typeId}" style="flex: 1;" ${isFull ? 'disabled' : ''}>
-                            ${isFull ? '⛔ ĐÃ HẾT LƯỢT' : '🔗 LẤY LINK'}
+                        <button class="btn btn-primary get-link-btn" data-type="${typeId}" style="flex: 1;" ${isFull || isCooldown ? 'disabled' : ''}>
+                            ${isFull ? '⛔ ĐÃ HẾT LƯỢT' : isCooldown ? `⏳ Đợi ${Math.ceil(cooldown/60000)}p` : '🔗 LẤY LINK'}
                         </button>
                         <span style="font-size: 12px; color: var(--text2);">🪙 +${typeCfg.reward || 100}</span>
                     </div>
-                </div>
-            `;
+                </div>`;
         }
-
         if (linkTypeCardsHTML === '') linkTypeCardsHTML = '<p style="text-align: center; color: var(--text2); padding: 30px;">⚠️ Chưa có loại link nào được kích hoạt. Vui lòng liên hệ Admin.</p>';
 
         this.container.innerHTML = `
-            <div class="card"><div class="card-title">📋 Nhiệm vụ</div><p style="font-size:12px;color:var(--text2);margin-bottom:10px;">Mỗi loại link có giới hạn lượt/ngày riêng. Nhấn LẤY LINK để nhận link + mã mới.</p>${linkTypeCardsHTML}</div>
-            <div class="card" id="verifySection" style="display: none;">
+            <div class="card"><div class="card-title">📋 Nhiệm vụ</div><p style="font-size:12px;color:var(--text2);margin-bottom:10px;">Mỗi loại link có giới hạn lượt/ngày riêng. Nhấn LẤY LINK để mở link và tìm mã.</p>${linkTypeCardsHTML}</div>
+            <div class="card">
                 <div class="card-title">🔑 Nhập mã xác nhận</div>
-                <p style="font-size: 12px; color: var(--text2);" id="verifyHint">Đang tải link...</p>
-                <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 8px; margin-bottom: 10px; word-break: break-all;">
-                    <span style="font-size: 11px; color: var(--text2);">🔗 Link của bạn:</span><br>
-                    <span id="currentLinkUrl" style="font-size: 12px; color: #5f91ff;"></span>
-                </div>
                 <input class="input" id="codeInput" placeholder="Nhập mã từ link...">
                 <button class="btn btn-success" id="btnVerify">✅ Xác nhận</button>
+                ${isCooldown ? `<p style="font-size:12px;color:var(--text2);text-align:center;margin-top:8px;">⏱️ Đợi ${Math.ceil(cooldown/60000)} phút để làm nhiệm vụ tiếp</p>` : ''}
             </div>
             <div class="card"><div class="card-title">🎁 Rương thưởng</div><div class="progress-bar"><div class="progress-fill" style="width:${(isReady ? CONFIG.linksForChest : progress) / CONFIG.linksForChest * 100}%"></div></div><p style="text-align:center;">${isReady ? CONFIG.linksForChest : progress}/${CONFIG.linksForChest}</p><button class="btn btn-gold" id="btnChest" ${isReady ? '' : 'disabled'}>🎁 Mở rương</button></div>
         `;
@@ -517,87 +676,65 @@ class TasksPage {
         this.container.querySelectorAll('.get-link-btn').forEach(btn => {
             btn.onclick = async () => {
                 const typeId = btn.dataset.type;
-                const typeCfg = CONFIG.linkTypes[typeId];
                 btn.disabled = true;
                 const orig = btn.innerHTML;
-                btn.innerHTML = '⏳ Đang tải...';
+                btn.innerHTML = '⏳...';
                 try {
-                    const task = await FB.getRandomTask(this.app.user.id, typeId);
-                    if (task.status === 'empty' || task.status === 'limit' || task.status === 'error') {
+                    const task = await FB.getRandomTaskByType(this.app.user.id, typeId);
+                    if (task.status === 'ok') {
+                        this.currentLinkType = typeId;
+                        if (this.app.tg) this.app.tg.openLink(task.url);
+                        else window.open(task.url, '_blank');
+                        this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
+                    } else {
                         this.app.toast(task.message, 'warning');
-                        btn.innerHTML = orig;
-                        btn.disabled = false;
-                        return;
                     }
-                    this.currentTask = task;
-                    this.currentLinkType = typeId;
-                    const vs = document.getElementById('verifySection');
-                    const vh = document.getElementById('verifyHint');
-                    const lu = document.getElementById('currentLinkUrl');
-                    if (vs) vs.style.display = 'block';
-                    if (vh) vh.innerHTML = `🟢 Loại: <b style="color:${typeCfg.color};">${typeCfg.name}</b> - Sao chép mã từ link và nhập bên dưới.`;
-                    if (lu) lu.textContent = task.url;
-                    if (this.app.tg) this.app.tg.openLink(task.url);
-                    else window.open(task.url, '_blank');
-                    this.app.toast(`Đã mở link ${typeCfg.name}!`, 'info');
-                    btn.innerHTML = orig;
-                    btn.disabled = false;
-                } catch (e) {
-                    this.app.toast('Có lỗi xảy ra!', 'error');
-                    btn.innerHTML = orig;
-                    btn.disabled = false;
-                }
+                } catch (e) { this.app.toast('Có lỗi!', 'error'); }
+                finally { btn.innerHTML = orig; btn.disabled = false; }
             };
         });
 
-        const btnVerify = this.container.querySelector('#btnVerify');
-        if (btnVerify) {
-            btnVerify.onclick = async () => {
-                const code = this.container.querySelector('#codeInput').value.trim();
-                if (!code) return this.app.toast('Nhập mã!', 'warning');
-                btnVerify.disabled = true;
-                const orig = btnVerify.textContent;
-                btnVerify.textContent = '⏳ Đang xử lý...';
-                try {
-                    const result = await FB.verifyCode(this.app.user.id, code);
-                    if (result.status === 'ok') {
-                        this.app.toast(`+${result.reward} 🪙!`, 'success');
-                        this.app.refreshUserBar();
-                        const vs = document.getElementById('verifySection');
-                        if (vs) vs.style.display = 'none';
-                        document.getElementById('codeInput').value = '';
-                        this.render();
-                    } else if (result.status === 'wrong') this.app.toast(result.message, 'error');
-                    else if (result.status === 'cooldown') this.app.toast(result.message, 'warning');
-                    else this.app.toast(result.message || 'Có lỗi!', 'error');
-                } catch (e) { this.app.toast('Có lỗi xảy ra!', 'error'); }
-                finally { btnVerify.textContent = orig; btnVerify.disabled = false; }
-            };
-        }
+        this.container.querySelector('#btnVerify').onclick = async () => {
+            const code = this.container.querySelector('#codeInput').value.trim();
+            if (!code) return this.app.toast('Nhập mã!', 'warning');
+            const btn = this.container.querySelector('#btnVerify');
+            const orig = btn.textContent;
+            btn.textContent = '⏳...'; btn.disabled = true;
+            try {
+                const result = await FB.verifyCodeByType(this.app.user.id, code);
+                if (result.status === 'ok') {
+                    this.app.toast(`+${result.reward} 🪙!${result.warning ? ' ⚠️ ' + result.warning : ''}`, result.warning ? 'warning' : 'success');
+                    this.app.refreshUserBar();
+                    document.getElementById('codeInput').value = '';
+                    this.render();
+                } else if (result.status === 'cooldown') {
+                    this.app.toast(result.message, 'warning');
+                    this.render();
+                } else {
+                    this.app.toast(result.message || 'Mã không đúng!', 'error');
+                }
+            } catch (e) { this.app.toast('Có lỗi!', 'error'); }
+            finally { btn.textContent = orig; btn.disabled = false; }
+        };
 
-        const btnChest = this.container.querySelector('#btnChest');
-        if (btnChest) {
-            btnChest.onclick = async () => {
-                btnChest.disabled = true;
-                const orig = btnChest.textContent;
-                btnChest.textContent = '⏳ Đang mở...';
-                try {
-                    const res = await FB.openChest(this.app.user.id);
-                    if (res.status === 'ok') { this.app.toast(`Nhận ${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); this.render(); }
-                    else this.app.toast(res.message, 'error');
-                } catch (e) { this.app.toast('Có lỗi!', 'error'); }
-                finally { btnChest.textContent = orig; btnChest.disabled = false; }
-            };
-        }
+        this.container.querySelector('#btnChest').onclick = async () => { 
+            const btn = this.container.querySelector('#btnChest');
+            const orig = btn.textContent;
+            btn.textContent = '⏳...'; btn.disabled = true;
+            try {
+                const res = await FB.openChest(this.app.user.id); 
+                if (res.status === 'ok') { this.app.toast(`Nhận ${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); this.render(); } 
+                else this.app.toast(res.message, 'error');
+            } catch (e) { this.app.toast('Có lỗi!', 'error'); }
+            finally { btn.textContent = orig; btn.disabled = false; }
+        };
     }
 }
 
-// ==================== TRANG BẠN BÈ ====================
 class FriendsPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     render() {
-        const u = this.userData;
-        const refLink = `https://t.me/${this.app.tg?.botUsername || 'cayxummo_bot'}/app?startapp=${u.id}`;
+        const u = this.userData; const refLink = `https://t.me/${this.app.tg.botUsername || 'cayxummo_bot'}/app?startapp=${u.id}`;
         this.container.innerHTML = `
             <div class="card"><div class="card-title">👥 Mời bạn bè</div><p style="font-size:13px;color:var(--text2);">Link mời của bạn:</p><div style="background:rgba(255,255,255,0.05);padding:10px;border-radius:8px;word-break:break-all;margin-bottom:10px;">${refLink}</div><button class="btn btn-primary" id="copyLink">📋 Copy link</button><p style="margin-top:12px;">🎁 Thưởng:<br>2 bạn → +100 🪙<br>5 bạn → +300 🪙<br>10 bạn → +1.000 🪙</p></div>
             <div class="card"><div class="card-title">📊 Bạn đã mời: ${(u.friends||[]).length}</div></div>
@@ -606,40 +743,82 @@ class FriendsPage {
         this.container.querySelector('#copyLink').onclick = () => { navigator.clipboard.writeText(refLink); this.app.toast('Đã copy!', 'success'); };
         this.loadTopFriends();
     }
-    async loadTopFriends() {
+    async loadTopFriends() { 
         try {
-            const top = await FB.getTopFriends(10);
-            const html = top.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username||'Unknown'}</span><span style="margin-left:auto;">👥 ${u.friends}</span></div>`).join('');
+            const top = await FB.getTopFriends(10); 
+            const html = top.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username||'Unknown'}</span><span style="margin-left:auto;">👥 ${u.friends}</span></div>`).join(''); 
             this.container.querySelector('#topFriends').innerHTML = html || '<p>Chưa có dữ liệu</p>';
-        } catch (e) { this.container.querySelector('#topFriends').innerHTML = '<p>Không thể tải dữ liệu</p>'; }
+        } catch (error) {
+            this.container.querySelector('#topFriends').innerHTML = '<p>Không thể tải dữ liệu</p>';
+        }
     }
 }
 
-// ==================== TRANG BXH ====================
 class LeaderboardPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; this.countdownInterval = null; }
-    destroy() { if (this.countdownInterval) { clearInterval(this.countdownInterval); this.countdownInterval = null; } }
+    
+    destroy() {
+        if (this.countdownInterval) {
+            clearInterval(this.countdownInterval);
+            this.countdownInterval = null;
+        }
+    }
+    
     async render() {
-        if (this.countdownInterval) { clearInterval(this.countdownInterval); this.countdownInterval = null; }
+        if (this.countdownInterval) {
+            clearInterval(this.countdownInterval);
+            this.countdownInterval = null;
+        }
         await FB.checkAndDistributeRewards();
+        
         const top = await FB.getTopLinks(10);
         const fundSnap = await FB.db.ref('prize_fund').once('value');
         const fund = fundSnap.val() || 0;
         const timeUntil = FB.getTimeUntilSunday8AM();
+        
         const days = Math.floor(timeUntil / 86400000);
         const hours = Math.floor((timeUntil % 86400000) / 3600000);
         const minutes = Math.floor((timeUntil % 3600000) / 60000);
         const seconds = Math.floor((timeUntil % 60000) / 1000);
         const countdownStr = `${days}ngày ${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+        
         this.container.innerHTML = `
-            <div class="card"><div class="card-title">💰 Quỹ thưởng BXH</div><p style="text-align:center;font-size:28px;font-weight:bold;color:var(--gold);">${fund.toLocaleString()} 🪙</p><p style="text-align:center;font-size:12px;color:var(--text2);">Phát thưởng vào 8h Chủ nhật cho Top 10</p></div>
-            <div class="card"><div class="card-title">🏆 Top vượt link</div><p style="font-size:12px;color:var(--text2);">Reset mỗi Chủ nhật 8h sáng</p><p style="text-align:center;font-size:18px;font-weight:bold;color:var(--accent);margin:8px 0;" class="countdown-timer">⏰ Còn: ${countdownStr}</p><div id="topLinks">${top.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có dữ liệu</p>' : top.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username||'Unknown'}</span><span style="margin-left:auto;">🔗 ${u.links||0}</span>${i < 7 ? `<span style="font-size:11px;color:var(--gold);margin-left:4px;">(${['40%','25%','15%','10%','5%','3%','2%'][i]})</span>` : ''}</div>`).join('')}</div></div>
+            <div class="card">
+                <div class="card-title">💰 Quỹ thưởng BXH</div>
+                <p style="text-align:center;font-size:28px;font-weight:bold;color:var(--gold);">${fund.toLocaleString()} 🪙</p>
+                <p style="text-align:center;font-size:12px;color:var(--text2);">Phát thưởng vào 8h Chủ nhật cho Top 10</p>
+            </div>
+            <div class="card">
+                <div class="card-title">🏆 Top vượt link</div>
+                <p style="font-size:12px;color:var(--text2);">Reset mỗi Chủ nhật 8h sáng</p>
+                <p style="text-align:center;font-size:18px;font-weight:bold;color:var(--accent);margin:8px 0;" class="countdown-timer">⏰ Còn: ${countdownStr}</p>
+                <div id="topLinks">
+                    ${top.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có dữ liệu</p>' : 
+                    top.map((u,i) => `<div class="leaderboard-item">
+                        <span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span>
+                        <span>${u.username||'Unknown'}</span>
+                        <span style="margin-left:auto;">🔗 ${u.links||0}</span>
+                        ${i < 7 ? `<span style="font-size:11px;color:var(--gold);margin-left:4px;">(${['40%','25%','15%','10%','5%','3%','2%'][i]})</span>` : ''}
+                    </div>`).join('')}
+                </div>
+            </div>
         `;
+        
         this.countdownInterval = setInterval(() => {
             const timeEl = document.querySelector('.countdown-timer');
-            if (!timeEl) { clearInterval(this.countdownInterval); this.countdownInterval = null; return; }
+            if (!timeEl) { 
+                clearInterval(this.countdownInterval); 
+                this.countdownInterval = null;
+                return; 
+            }
             const t = FB.getTimeUntilSunday8AM();
-            if (t <= 0) { timeEl.textContent = '🔄 Đang phát thưởng...'; clearInterval(this.countdownInterval); this.countdownInterval = null; this.render(); return; }
+            if (t <= 0) {
+                timeEl.textContent = '🔄 Đang phát thưởng...';
+                clearInterval(this.countdownInterval);
+                this.countdownInterval = null;
+                this.render();
+                return;
+            }
             const d = Math.floor(t / 86400000);
             const h = Math.floor((t % 86400000) / 3600000);
             const m = Math.floor((t % 3600000) / 60000);
@@ -649,7 +828,6 @@ class LeaderboardPage {
     }
 }
 
-// ==================== TRANG PVP ====================
 class PvPPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     render() {
@@ -660,7 +838,6 @@ class PvPPage {
     async joinRoom(bet) { this.app.toast(`Vào phòng ${bet.toLocaleString()} 🪙. Đang tìm đối thủ...`, 'info'); }
 }
 
-// ==================== TRANG TÀI KHOẢN ====================
 class AccountPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     async render() {
@@ -668,36 +845,69 @@ class AccountPage {
         this.container.innerHTML = `
             <div class="card"><div class="card-title">👤 Tài khoản</div><p>👤 ${u.username}</p><p>🆔 ${u.id}</p><p>🪙 ${(u.balance||0).toLocaleString()}</p></div>
             <div class="card"><div class="card-title">💱 Tỷ giá</div><p>3.000 🪙 = ${(1000*rate).toLocaleString()}đ</p></div>
-            <div class="card"><div class="card-title">📢 Tham gia Group</div><button class="btn btn-primary" id="btnJoinCodeGroup" style="margin-bottom:8px;">📋 Group Code</button><button class="btn btn-primary" id="btnJoinNotifyGroup">🔔 Group Thông báo</button></div>
+            <div class="card">
+                <div class="card-title">📢 Tham gia Group</div>
+                <button class="btn btn-primary" id="btnJoinCodeGroup" style="margin-bottom:8px;">📋 Group Code</button>
+                <button class="btn btn-primary" id="btnJoinNotifyGroup">🔔 Group Thông báo</button>
+            </div>
             <div class="card"><div class="card-title">🎁 Gift Code</div><input class="input" id="giftInput" placeholder="Nhập Gift Code"><button class="btn btn-gold" id="btnGift">Nhận</button></div>
             <div class="card"><div class="card-title">💸 Rút 🪙</div><input class="input" id="wdBank" placeholder="Ngân hàng"><input class="input" id="wdName" placeholder="Tên chủ TK"><input class="input" id="wdAccount" placeholder="Số TK"><input class="input" id="wdAmount" type="number" placeholder="Số 🪙(60.000-150.000🪙)"><button class="btn btn-warning" id="btnWithdraw">Gửi yêu cầu</button></div>
             <div class="card"><div class="card-title">📜 Lịch sử rút</div><div id="wdHistory">Đang tải...</div></div>
         `;
-        document.getElementById('btnJoinCodeGroup').onclick = () => { const link = 'https://t.me/CodeXummo'; if (this.app.tg) this.app.tg.openLink(link); else window.open(link, '_blank'); };
-        document.getElementById('btnJoinNotifyGroup').onclick = () => { const link = 'https://t.me/Cayxummo'; if (this.app.tg) this.app.tg.openLink(link); else window.open(link, '_blank'); };
-        this.container.querySelector('#btnGift').onclick = async () => {
-            const code = this.container.querySelector('#giftInput').value.trim();
-            if (!code) return this.app.toast('Nhập code!', 'warning');
-            const btn = this.container.querySelector('#btnGift');
-            const orig = btn.textContent; btn.textContent = '⏳...'; btn.disabled = true;
-            try {
-                const res = await FB.redeemGiftCode(this.app.user.id, code);
-                if (res.status === 'ok') { this.app.toast(`+${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); }
-                else this.app.toast('Code không hợp lệ!', 'error');
-            } catch (e) { this.app.toast('Có lỗi!', 'error'); }
-            finally { btn.textContent = orig; btn.disabled = false; }
+        
+        document.getElementById('btnJoinCodeGroup').onclick = () => {
+            const link = 'https://t.me/CodeXummo';
+            if (this.app.tg) {
+                this.app.tg.openLink(link);
+            } else {
+                window.open(link, '_blank');
+            }
         };
-        this.container.querySelector('#btnWithdraw').onclick = async () => {
-            const data = { bank: this.container.querySelector('#wdBank').value.trim(), accountName: this.container.querySelector('#wdName').value.trim(), accountNumber: this.container.querySelector('#wdAccount').value.trim(), amount: this.container.querySelector('#wdAmount').value.trim() };
-            if (!data.bank || !data.accountName || !data.accountNumber || !data.amount) return this.app.toast('Điền đầy đủ!', 'warning');
-            const btn = this.container.querySelector('#btnWithdraw');
-            const orig = btn.textContent; btn.textContent = '⏳...'; btn.disabled = true;
+
+        document.getElementById('btnJoinNotifyGroup').onclick = () => {
+            const link = 'https://t.me/Cayxummo';
+            if (this.app.tg) {
+                this.app.tg.openLink(link);
+            } else {
+                window.open(link, '_blank');
+            }
+        };
+
+        this.container.querySelector('#btnGift').onclick = async () => { 
+            const code = this.container.querySelector('#giftInput').value.trim(); 
+            if (!code) return this.app.toast('Nhập code!', 'warning'); 
+            const btn = this.container.querySelector('#btnGift');
+            const originalText = btn.textContent;
+            btn.textContent = '⏳ Đang xử lý...';
+            btn.disabled = true;
             try {
-                const res = await FB.requestWithdraw(this.app.user.id, data);
-                if (res.status === 'ok') { this.app.toast('Đã gửi yêu cầu!', 'success'); this.app.refreshUserBar(); this.render(); }
+                const res = await FB.redeemGiftCode(this.app.user.id, code); 
+                if (res.status === 'ok') { this.app.toast(`+${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); } 
+                else this.app.toast('Code không hợp lệ!', 'error');
+            } catch (error) {
+                this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        };
+        this.container.querySelector('#btnWithdraw').onclick = async () => { 
+            const data = { bank: this.container.querySelector('#wdBank').value.trim(), accountName: this.container.querySelector('#wdName').value.trim(), accountNumber: this.container.querySelector('#wdAccount').value.trim(), amount: this.container.querySelector('#wdAmount').value.trim() }; 
+            if (!data.bank || !data.accountName || !data.accountNumber || !data.amount) return this.app.toast('Điền đầy đủ!', 'warning'); 
+            const btn = this.container.querySelector('#btnWithdraw');
+            const originalText = btn.textContent;
+            btn.textContent = '⏳ Đang xử lý...';
+            btn.disabled = true;
+            try {
+                const res = await FB.requestWithdraw(this.app.user.id, data); 
+                if (res.status === 'ok') { this.app.toast('Đã gửi yêu cầu!', 'success'); this.app.refreshUserBar(); this.render(); } 
                 else this.app.toast(res.message, 'error');
-            } catch (e) { this.app.toast('Có lỗi!', 'error'); }
-            finally { btn.textContent = orig; btn.disabled = false; }
+            } catch (error) {
+                this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
         };
         this.loadHistory();
     }
@@ -706,24 +916,41 @@ class AccountPage {
             const history = await FB.getWithdrawHistory(this.app.user.id);
             const container = this.container.querySelector('#wdHistory');
             if (!container) return;
-            if (history.length === 0) { container.innerHTML = '<p style="color:var(--text2);">Chưa có lịch sử rút</p>'; return; }
+            if (history.length === 0) {
+                container.innerHTML = '<p style="color:var(--text2);">Chưa có lịch sử rút</p>';
+                return;
+            }
             const html = history.map(h => {
                 let dateStr = 'N/A';
-                if (h.createdAt) { const ts = typeof h.createdAt === 'object' ? Date.now() : h.createdAt; dateStr = new Date(ts).toLocaleString('vi-VN'); }
-                let st = '🟡 Chờ', sc = 'badge-pending';
-                if (h.status === 'approved') { st = '🟢 Thành công'; sc = 'badge-success'; }
-                else if (h.status === 'rejected') { st = '🔴 Từ chối'; sc = 'badge-rejected'; }
-                return `<div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05);"><p>💰 ${h.amountXu.toLocaleString()} 🪙 = ${h.amountVnd.toLocaleString()}đ</p><p>🏦 ${h.bank} - ${h.accountNumber}</p><span class="badge ${sc}">${st}</span><p style="font-size:10px;color:var(--text2);">${dateStr}</p></div>`;
+                if (h.createdAt) {
+                    const ts = typeof h.createdAt === 'object' ? Date.now() : h.createdAt;
+                    dateStr = new Date(ts).toLocaleString('vi-VN');
+                }
+                let statusText = '🟡 Chờ';
+                let statusClass = 'badge-pending';
+                if (h.status === 'approved') { statusText = '🟢 Thành công'; statusClass = 'badge-success'; }
+                else if (h.status === 'rejected') { statusText = '🔴 Từ chối'; statusClass = 'badge-rejected'; }
+                return `
+                    <div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05);">
+                        <p>💰 ${h.amountXu.toLocaleString()} 🪙 = ${h.amountVnd.toLocaleString()}đ</p>
+                        <p>🏦 ${h.bank} - ${h.accountNumber}</p>
+                        <span class="badge ${statusClass}">${statusText}</span>
+                        <p style="font-size:10px;color:var(--text2);">${dateStr}</p>
+                    </div>
+                `;
             }).join('');
             container.innerHTML = html;
-        } catch (e) { const c = this.container.querySelector('#wdHistory'); if (c) c.innerHTML = '<p style="color:var(--text2);">Không thể tải</p>'; }
+        } catch (error) {
+            const container = this.container.querySelector('#wdHistory');
+            if (container) container.innerHTML = '<p style="color:var(--text2);">Không thể tải lịch sử</p>';
+        }
     }
 }
 
-// ==================== TRANG ADMIN ====================
+// ==================== ADMIN PAGE (ĐÃ THÊM TAB MỚI) ====================
 class AdminPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
-
+    
     async render() {
         if (!this.app.isAdmin) { this.container.innerHTML = '<p>⛔ Không có quyền!</p>'; return; }
         const stats = await FB.getDashboard();
@@ -738,6 +965,7 @@ class AdminPage {
             <p style="margin:10px 0;">📥 Yêu cầu rút chờ: <b>${stats.pendingWithdraws}</b></p>
             <div class="admin-tabs" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
                 <button class="admin-tab active" data-tab="config">⚙️ Cấu hình</button>
+                <button class="admin-tab" data-tab="tasks">📋 Nhiệm vụ</button>
                 <button class="admin-tab" data-tab="linktypes">🔗 Loại Link</button>
                 <button class="admin-tab" data-tab="import">📥 Import Mã</button>
                 <button class="admin-tab" data-tab="codestats">📊 Thống kê Mã</button>
@@ -755,16 +983,16 @@ class AdminPage {
             <div id="adminTabContent"></div>
         `;
         this.loadTab('config');
-        this.container.querySelectorAll('.admin-tab').forEach(btn => btn.onclick = () => {
-            this.container.querySelectorAll('.admin-tab').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            this.loadTab(btn.dataset.tab);
+        this.container.querySelectorAll('.admin-tab').forEach(btn => btn.onclick = () => { 
+            this.container.querySelectorAll('.admin-tab').forEach(b => b.classList.remove('active')); 
+            btn.classList.add('active'); 
+            this.loadTab(btn.dataset.tab); 
         });
     }
 
     async loadTab(tab) {
         const content = document.getElementById('adminTabContent');
-
+        
         if (tab === 'codestats') {
             const linkTypes = CONFIG.linkTypes || {};
             let statsHTML = '';
@@ -776,39 +1004,17 @@ class AdminPage {
                     <div class="card" style="border-left: 4px solid ${typeCfg.color};">
                         <div class="card-title">${typeCfg.icon || '🔗'} ${typeCfg.name} <span style="font-size:12px;color:var(--text2);">(${typeId})</span></div>
                         <div style="display: flex; gap: 15px; margin-bottom: 10px; flex-wrap: wrap;">
-                            <div style="flex: 1; min-width: 80px; background: rgba(46,213,115,0.1); padding: 10px; border-radius: 8px; text-align: center;">
-                                <div style="font-size: 24px; font-weight: bold; color: #2ed573;">${stats.available}</div>
-                                <div style="font-size: 11px; color: var(--text2);">✅ Còn lại</div>
-                            </div>
-                            <div style="flex: 1; min-width: 80px; background: rgba(255,71,87,0.1); padding: 10px; border-radius: 8px; text-align: center;">
-                                <div style="font-size: 24px; font-weight: bold; color: #ff4757;">${stats.used}</div>
-                                <div style="font-size: 11px; color: var(--text2);">❌ Đã dùng</div>
-                            </div>
-                            <div style="flex: 1; min-width: 80px; background: rgba(255,215,0,0.1); padding: 10px; border-radius: 8px; text-align: center;">
-                                <div style="font-size: 24px; font-weight: bold; color: #ffd700;">${stats.total}</div>
-                                <div style="font-size: 11px; color: var(--text2);">📋 Tổng</div>
-                            </div>
-                            ${stats.expired > 0 ? `
-                            <div style="flex: 1; min-width: 80px; background: rgba(95,145,255,0.1); padding: 10px; border-radius: 8px; text-align: center;">
-                                <div style="font-size: 24px; font-weight: bold; color: #5f91ff;">${stats.expired}</div>
-                                <div style="font-size: 11px; color: var(--text2);">🔄 Đã reset</div>
-                            </div>` : ''}
+                            <div style="flex: 1; min-width: 80px; background: rgba(46,213,115,0.1); padding: 10px; border-radius: 8px; text-align: center;"><div style="font-size: 24px; font-weight: bold; color: #2ed573;">${stats.available}</div><div style="font-size: 11px; color: var(--text2);">✅ Còn lại</div></div>
+                            <div style="flex: 1; min-width: 80px; background: rgba(255,71,87,0.1); padding: 10px; border-radius: 8px; text-align: center;"><div style="font-size: 24px; font-weight: bold; color: #ff4757;">${stats.used}</div><div style="font-size: 11px; color: var(--text2);">❌ Đã dùng</div></div>
+                            <div style="flex: 1; min-width: 80px; background: rgba(255,215,0,0.1); padding: 10px; border-radius: 8px; text-align: center;"><div style="font-size: 24px; font-weight: bold; color: #ffd700;">${stats.total}</div><div style="font-size: 11px; color: var(--text2);">📋 Tổng</div></div>
+                            ${stats.expired > 0 ? `<div style="flex: 1; min-width: 80px; background: rgba(95,145,255,0.1); padding: 10px; border-radius: 8px; text-align: center;"><div style="font-size: 24px; font-weight: bold; color: #5f91ff;">${stats.expired}</div><div style="font-size: 11px; color: var(--text2);">🔄 Đã reset</div></div>` : ''}
                         </div>
-                        <div style="background: rgba(255,255,255,0.05); border-radius: 8px; height: 8px; overflow: hidden; margin-bottom: 15px;">
-                            <div style="height: 100%; background: linear-gradient(90deg, #2ed573 ${ap}%, #ff4757 ${ap}%); width: 100%;"></div>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text2);">
-                            <span>🟢 ${ap}% còn</span><span>🔴 ${up}% đã dùng</span>
-                        </div>
-                        <details style="margin-top: 15px;">
-                            <summary style="cursor: pointer; color: var(--accent); font-size: 13px;">📋 Xem chi tiết (${stats.codes.length} mã)</summary>
-                            <div style="max-height: 300px; overflow-y: auto; margin-top: 10px;">
-                                <table style="width: 100%; font-size: 11px; border-collapse: collapse;">
-                                    <thead><tr style="background: rgba(255,255,255,0.05);"><th style="padding: 6px; text-align: left;">Mã</th><th style="padding: 6px; text-align: center;">Trạng thái</th><th style="padding: 6px; text-align: center;">Số lần dùng</th><th style="padding: 6px; text-align: right;">Dùng lúc</th></tr></thead>
-                                    <tbody>${stats.codes.map(c => `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);"><td style="padding: 6px; font-family: monospace;">${c.code}</td><td style="padding: 6px; text-align: center;"><span style="padding: 2px 6px; border-radius: 10px; font-size: 10px; background: ${c.available ? 'rgba(46,213,115,0.2)' : 'rgba(255,71,87,0.2)'}; color: ${c.available ? '#2ed573' : '#ff4757'};">${c.expired ? '🔄 Reset' : c.available ? '✅ Sẵn sàng' : '❌ Đã dùng'}</span></td><td style="padding: 6px; text-align: center;">${c.usedCount}</td><td style="padding: 6px; text-align: right; font-size: 10px; color: var(--text2);">${c.usedAt ? new Date(c.usedAt).toLocaleString('vi-VN') : '-'}</td></tr>`).join('')}</tbody>
-                                </table>
-                            </div>
-                        </details>
+                        <div style="background: rgba(255,255,255,0.05); border-radius: 8px; height: 8px; overflow: hidden; margin-bottom: 15px;"><div style="height: 100%; background: linear-gradient(90deg, #2ed573 ${ap}%, #ff4757 ${ap}%); width: 100%;"></div></div>
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text2);"><span>🟢 ${ap}% còn</span><span>🔴 ${up}% đã dùng</span></div>
+                        <details style="margin-top: 15px;"><summary style="cursor: pointer; color: var(--accent); font-size: 13px;">📋 Xem chi tiết (${stats.codes.length} mã)</summary>
+                        <div style="max-height: 300px; overflow-y: auto; margin-top: 10px;"><table style="width: 100%; font-size: 11px; border-collapse: collapse;">
+                        <thead><tr style="background: rgba(255,255,255,0.05);"><th style="padding: 6px; text-align: left;">Mã</th><th style="padding: 6px; text-align: center;">Trạng thái</th><th style="padding: 6px; text-align: center;">Số lần dùng</th><th style="padding: 6px; text-align: right;">Dùng lúc</th></tr></thead>
+                        <tbody>${stats.codes.map(c => `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);"><td style="padding: 6px; font-family: monospace;">${c.code}</td><td style="padding: 6px; text-align: center;"><span style="padding: 2px 6px; border-radius: 10px; font-size: 10px; background: ${c.available ? 'rgba(46,213,115,0.2)' : 'rgba(255,71,87,0.2)'}; color: ${c.available ? '#2ed573' : '#ff4757'};">${c.expired ? '🔄 Reset' : c.available ? '✅ Sẵn sàng' : '❌ Đã dùng'}</span></td><td style="padding: 6px; text-align: center;">${c.usedCount}</td><td style="padding: 6px; text-align: right; font-size: 10px; color: var(--text2);">${c.usedAt ? new Date(c.usedAt).toLocaleString('vi-VN') : '-'}</td></tr>`).join('')}</tbody></table></div></details>
                     </div>`;
             }
             content.innerHTML = `<h3>📊 Thống kê mã theo loại link</h3><p style="font-size: 12px; color: var(--text2); margin-bottom: 10px;">⏰ Mã sẽ tự động reset sau ${CONFIG.codeResetDays} ngày kể từ lần dùng cuối</p>${statsHTML || '<p style="text-align:center;color:var(--text2);">Chưa có loại link nào</p>'}`;
@@ -823,27 +1029,20 @@ class AdminPage {
                 <label class="input-label">Chọn loại link:</label><select class="input" id="importLinkType">${typeOptions}</select>
                 <label class="input-label">Chọn file .txt:</label><input type="file" id="importFile" accept=".txt" class="input" style="padding: 10px;">
                 <div style="margin-top: 10px;"><p style="font-size: 12px; color: var(--text2);">Hoặc dán danh sách mã (mỗi dòng 1 mã):</p><textarea class="input" id="importTextarea" rows="5" placeholder="Mã1&#10;Mã2&#10;Mã3..."></textarea></div>
-                <button class="btn btn-success" id="btnImport">📥 Import mã</button><div id="importResult" style="margin-top: 10px;"></div></div>
-                <div class="card"><div class="card-title">📋 Hướng dẫn</div><ol style="font-size: 13px; color: var(--text2); line-height: 1.8;"><li>Tạo file <b>ma.txt</b> với mỗi dòng là 1 mã</li><li>Chọn loại link cần import mã</li><li>Upload file hoặc dán danh sách mã</li><li>Nhấn <b>Import mã</b></li><li>Mã sẽ được lưu vào pool của loại link đó</li><li>Mỗi user sẽ nhận 1 mã ngẫu nhiên từ pool khi nhấn LẤY LINK</li></ol></div>`;
+                <button class="btn btn-success" id="btnImport">📥 Import mã</button><div id="importResult" style="margin-top: 10px;"></div></div>`;
             document.getElementById('btnImport').onclick = async () => {
                 const linkTypeId = document.getElementById('importLinkType').value;
                 const textareaValue = document.getElementById('importTextarea').value.trim();
                 const fileInput = document.getElementById('importFile');
                 let codesArray = [];
                 if (textareaValue) codesArray = textareaValue.split('\n').map(c => c.trim()).filter(c => c);
-                if (fileInput.files.length > 0) {
-                    const file = fileInput.files[0];
-                    const text = await file.text();
-                    codesArray = text.split('\n').map(c => c.trim()).filter(c => c);
-                }
+                if (fileInput.files.length > 0) { const file = fileInput.files[0]; const text = await file.text(); codesArray = text.split('\n').map(c => c.trim()).filter(c => c); }
                 if (codesArray.length === 0) { document.getElementById('importResult').innerHTML = '<p style="color:#ff4757;">⚠️ Vui lòng nhập mã hoặc chọn file!</p>'; return; }
-                const btn = document.getElementById('btnImport');
-                btn.disabled = true; btn.textContent = '⏳ Đang import...';
+                const btn = document.getElementById('btnImport'); btn.disabled = true; btn.textContent = '⏳ Đang import...';
                 try {
                     const count = await FB.importCodes(linkTypeId, codesArray);
                     document.getElementById('importResult').innerHTML = `<p style="color:#2ed573;">✅ Đã import thành công <b>${count}</b> mã mới vào pool! Tổng đã xử lý: ${codesArray.length}</p>`;
-                    document.getElementById('importTextarea').value = '';
-                    document.getElementById('importFile').value = '';
+                    document.getElementById('importTextarea').value = ''; document.getElementById('importFile').value = '';
                 } catch (e) { document.getElementById('importResult').innerHTML = `<p style="color:#ff4757;">❌ Lỗi: ${e.message}</p>`; }
                 finally { btn.disabled = false; btn.textContent = '📥 Import mã'; }
             };
@@ -881,10 +1080,8 @@ class AdminPage {
             if (nameInput && idInput) nameInput.addEventListener('input', () => { idInput.value = nameInput.value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, ''); });
             const colorPicker = document.getElementById('newLinkColorPicker');
             const colorInput = document.getElementById('newLinkColor');
-            if (colorPicker && colorInput) {
-                colorPicker.addEventListener('input', () => { colorInput.value = colorPicker.value; });
-                colorInput.addEventListener('input', () => { if (/^#[0-9A-Fa-f]{6}$/.test(colorInput.value)) colorPicker.value = colorInput.value; });
-            }
+            if (colorPicker && colorInput) { colorPicker.addEventListener('input', () => { colorInput.value = colorPicker.value; }); colorInput.addEventListener('input', () => { if (/^#[0-9A-Fa-f]{6}$/.test(colorInput.value)) colorPicker.value = colorInput.value; }); }
+            
             document.getElementById('addLinkType').onclick = async () => {
                 const name = document.getElementById('newLinkName').value.trim();
                 const id = document.getElementById('newLinkId').value.trim();
@@ -897,67 +1094,104 @@ class AdminPage {
                 if (!name || !id) return this.app.toast('Nhập tên!', 'warning');
                 if (!url) return this.app.toast('Nhập URL nguồn!', 'warning');
                 if (CONFIG.linkTypes && CONFIG.linkTypes[id]) return this.app.toast('ID đã tồn tại!', 'error');
-                const btn = document.getElementById('addLinkType');
-                btn.disabled = true; btn.textContent = '⏳ Đang lưu...';
+                const btn = document.getElementById('addLinkType'); btn.disabled = true; btn.textContent = '⏳ Đang lưu...';
                 try {
                     const updatedTypes = { ...(CONFIG.linkTypes || {}), [id]: { name, maxPerDay, reward, icon, color, url, active } };
-                    await FB.db.ref('admin_config/linkTypes').set(updatedTypes);
-                    await FB.loadConfig();
+                    await FB.db.ref('admin_config/linkTypes').set(updatedTypes); await FB.loadConfig();
                     await FB.db.ref('admin_logs').push({ adminId: this.app.user.id, action: 'add_link_type', linkTypeId: id, details: { name, maxPerDay, reward, icon, color, url }, timestamp: firebase.database.ServerValue.TIMESTAMP });
-                    this.app.toast(`Đã thêm loại link: ${name}!`, 'success');
-                    this.loadTab('linktypes');
+                    this.app.toast(`Đã thêm loại link: ${name}!`, 'success'); this.loadTab('linktypes');
                 } catch (e) { this.app.toast('Có lỗi!', 'error'); }
                 finally { btn.disabled = false; btn.textContent = '➕ THÊM LOẠI'; }
             };
-            this.container.querySelectorAll('.edit-linktype').forEach(btn => btn.onclick = () => this.showEditLinkType(btn.dataset.id));
+            
             this.container.querySelectorAll('.toggle-linktype').forEach(btn => btn.onclick = async () => {
-                const id = btn.dataset.id;
-                const ca = btn.dataset.active === 'true';
-                try {
-                    const ut = { ...CONFIG.linkTypes };
-                    if (ut[id]) ut[id].active = !ca;
-                    await FB.db.ref('admin_config/linkTypes').set(ut);
-                    await FB.loadConfig();
-                    this.app.toast(`Đã ${!ca ? 'bật' : 'tắt'}!`, 'success');
-                    this.loadTab('linktypes');
-                } catch (e) { this.app.toast('Có lỗi!', 'error'); }
+                const id = btn.dataset.id; const ca = btn.dataset.active === 'true';
+                try { const ut = { ...CONFIG.linkTypes }; if (ut[id]) ut[id].active = !ca; await FB.db.ref('admin_config/linkTypes').set(ut); await FB.loadConfig(); this.app.toast(`Đã ${!ca ? 'bật' : 'tắt'}!`, 'success'); this.loadTab('linktypes'); }
+                catch (e) { this.app.toast('Có lỗi!', 'error'); }
             });
             this.container.querySelectorAll('.delete-linktype').forEach(btn => btn.onclick = async () => {
                 if (!confirm(`Xóa "${btn.dataset.name}"?`)) return;
-                try {
-                    const ut = { ...CONFIG.linkTypes }; delete ut[btn.dataset.id];
-                    await FB.db.ref('admin_config/linkTypes').set(ut);
-                    await FB.loadConfig();
-                    await FB.db.ref('admin_logs').push({ adminId: this.app.user.id, action: 'delete_link_type', linkTypeId: btn.dataset.id, timestamp: firebase.database.ServerValue.TIMESTAMP });
-                    this.app.toast(`Đã xóa!`, 'success');
-                    this.loadTab('linktypes');
-                } catch (e) { this.app.toast('Có lỗi!', 'error'); }
+                try { const ut = { ...CONFIG.linkTypes }; delete ut[btn.dataset.id]; await FB.db.ref('admin_config/linkTypes').set(ut); await FB.loadConfig(); this.app.toast('Đã xóa!', 'success'); this.loadTab('linktypes'); }
+                catch (e) { this.app.toast('Có lỗi!', 'error'); }
+            });
+            this.container.querySelectorAll('.edit-linktype').forEach(btn => btn.onclick = () => {
+                const id = btn.dataset.id; const cfg = CONFIG.linkTypes[id]; if (!cfg) return;
+                content.innerHTML = `
+                    <div class="card"><div class="card-title">✏️ Sửa: ${cfg.name}</div>
+                    <label>Tên:</label><input class="input" id="editLinkName" value="${cfg.name}">
+                    <label>ID: <b>${id}</b></label>
+                    <label>Lượt/ngày:</label><input class="input" id="editLinkMax" type="number" value="${cfg.maxPerDay||3}">
+                    <label>🪙 Thưởng:</label><input class="input" id="editLinkReward" type="number" value="${cfg.reward||100}">
+                    <label>Icon:</label><input class="input" id="editLinkIcon" value="${cfg.icon||'🔗'}">
+                    <label>Màu:</label><div style="display:flex;gap:6px;"><input type="color" id="editLinkColorPicker" value="${cfg.color||'#ff00ff'}" style="width:40px;height:40px;"><input class="input" id="editLinkColor" value="${cfg.color||'#ff00ff'}"></div>
+                    <label>URL:</label><input class="input" id="editLinkUrl" value="${cfg.url||''}">
+                    <div style="display:flex;gap:10px;margin-top:15px;"><button class="btn btn-primary" id="saveEditLinkType">💾 Lưu</button><button class="btn btn-warning" id="cancelEditLinkType">↩️ Quay lại</button></div></div>`;
+                const picker = document.getElementById('editLinkColorPicker'), input = document.getElementById('editLinkColor');
+                picker.addEventListener('input', () => input.value = picker.value);
+                input.addEventListener('input', () => { if (/^#[0-9A-Fa-f]{6}$/.test(input.value)) picker.value = input.value; });
+                document.getElementById('cancelEditLinkType').onclick = () => this.loadTab('linktypes');
+                document.getElementById('saveEditLinkType').onclick = async () => {
+                    const name = document.getElementById('editLinkName').value.trim();
+                    const maxPerDay = parseInt(document.getElementById('editLinkMax').value) || 3;
+                    const reward = parseInt(document.getElementById('editLinkReward').value) || 100;
+                    const icon = document.getElementById('editLinkIcon').value.trim() || '🔗';
+                    const color = document.getElementById('editLinkColor').value.trim() || '#ff00ff';
+                    const url = document.getElementById('editLinkUrl').value.trim();
+                    if (!name || !url) return this.app.toast('Nhập đủ!', 'warning');
+                    try { const ut = { ...CONFIG.linkTypes }; ut[id] = { name, maxPerDay, reward, icon, color, url, active: ut[id]?.active !== false }; await FB.db.ref('admin_config/linkTypes').set(ut); await FB.loadConfig(); this.app.toast('Đã cập nhật!', 'success'); this.loadTab('linktypes'); }
+                    catch (e) { this.app.toast('Có lỗi!', 'error'); }
+                };
             });
         }
 
-        else if (tab === 'config') {
-            const cs = await FB.db.ref('admin_config').once('value');
-            const cfg = cs.val() || {};
-            const rate = cfg.exchange_rate || CONFIG.exchange_rate;
-            const dr = cfg.dailyRewards || CONFIG.dailyRewards;
-            const lfc = cfg.linksForChest || CONFIG.linksForChest;
-            const lc = cfg.linkCooldown ? cfg.linkCooldown / 60000 : CONFIG.linkCooldown / 60000;
-            const mcpd = cfg.maxCodesPerDay || CONFIG.maxCodesPerDay;
-            const cr = cfg.chestRewards || CONFIG.chestRewards;
-            const fr = cfg.friendRewards || CONFIG.friendRewards;
-            const crd = cfg.codeResetDays || CONFIG.codeResetDays;
+        else if (tab === 'history') {
             content.innerHTML = `
-                <div class="card"><div class="card-title">📅 Điểm danh 7 ngày</div><label class="input-label">🪙 thưởng 7 ngày (cách nhau dấu phẩy)</label><input class="input" id="cfgDailyRewards" value="${dr.join(',')}"></div>
-                <div class="card"><div class="card-title">🎁 Rương & Link</div><label class="input-label">Số link mở rương</label><input class="input" id="cfgLinksForChest" type="number" value="${lfc}"><label class="input-label">Thời gian chờ giữa link (phút)</label><input class="input" id="cfgLinkCooldown" type="number" value="${lc}"><label class="input-label">🔢 Giới hạn mã/ngày</label><input class="input" id="cfgMaxCodesPerDay" type="number" value="${mcpd}"><label class="input-label">🪙 thưởng rương (cách nhau dấu phẩy)</label><input class="input" id="cfgChestRewards" value="${cr.join(',')}"></div>
-                <div class="card"><div class="card-title">👥 Bạn bè</div><label class="input-label">Thưởng mời bạn (số_bạn:🪙)</label><input class="input" id="cfgFriendRewards" value="${Object.entries(fr).map(([k,v])=>`${k}:${v}`).join(',')}"></div>
-                <div class="card"><div class="card-title">🔄 Reset mã</div><label class="input-label">Số ngày để reset mã đã dùng</label><input class="input" id="cfgCodeResetDays" type="number" value="${crd}" min="1"><p style="font-size:11px;color:var(--text2);">Sau số ngày này, mã đã dùng sẽ tự động có thể dùng lại</p></div>
-                <div class="card"><div class="card-title">💸 Rút 🪙</div><label class="input-label">Rút tối thiểu</label><input class="input" id="cfgMinWithdraw" type="number" value="${cfg.minWithdraw || CONFIG.minWithdraw}"><label class="input-label">Rút tối đa/lần</label><input class="input" id="cfgMaxWithdraw" type="number" value="${cfg.maxWithdraw || CONFIG.maxWithdraw}"><label class="input-label">💱 Tỷ giá (3🪙 = ? VND)</label><input class="input" id="cfgRate" type="number" value="${rate}"></div>
+                <div class="card"><div class="card-title">📊 Lịch sử giao dịch của User</div>
+                <p style="font-size:13px;color:var(--text2);margin-bottom:8px;">Nhập User ID để xem toàn bộ lịch sử nhận/thưởng 🪙</p>
+                <div style="display:flex;gap:8px;"><input class="input" id="searchHistoryUser" placeholder="Nhập User ID..." style="margin-bottom:0;flex:1;"><button class="btn btn-primary" id="searchHistoryBtn" style="width:auto;padding:10px 20px;">🔍 Tìm</button></div></div>
+                <div id="historyResult"><p style="text-align:center;color:var(--text2);padding:30px 0;">🔍 Nhập User ID và bấm Tìm để xem lịch sử</p></div>`;
+            document.getElementById('searchHistoryBtn').onclick = async () => {
+                const uid = document.getElementById('searchHistoryUser').value.trim();
+                if (!uid) { document.getElementById('historyResult').innerHTML = '<p style="text-align:center;color:var(--text2);">⚠️ Vui lòng nhập User ID</p>'; return; }
+                const btn = document.getElementById('searchHistoryBtn'); const orig = btn.textContent; btn.textContent = '⏳...'; btn.disabled = true;
+                try {
+                    const user = await FB.getUser(uid);
+                    if (!user) { document.getElementById('historyResult').innerHTML = '<div class="card" style="border-color:#ff4757;"><p style="color:#ff4757;">❌ Không tìm thấy user với ID: <b>'+uid+'</b></p></div>'; return; }
+                    const history = await FB.getTransactionHistory(uid, 500);
+                    if (history.length === 0) { document.getElementById('historyResult').innerHTML = `<div class="card"><p><b>👤 ${user.username}</b> (ID: ${uid})</p><p>🪙 Số dư: <b>${(user.balance||0).toLocaleString()}</b></p><p>📭 Chưa có giao dịch</p></div>`; return; }
+                    let ti = 0, to = 0; history.forEach(h => { if (h.amount > 0) ti += h.amount; else to += Math.abs(h.amount); });
+                    const tl = { daily:'📅 Điểm danh', task:'🔗 Vượt link', chest:'🎁 Rương', gift:'🎫 Gift', friend:'👥 Bạn', withdraw:'💸 Rút' };
+                    const tc = { daily:'#2ed573', task:'#5f91ff', chest:'#ffd700', gift:'#ff6b81', friend:'#a29bfe', withdraw:'#ff4757' };
+                    let html = `<div class="card"><div style="display:flex;justify-content:space-between;"><div><b>👤 ${user.username}</b><br>🆔 ${uid}</div><div>🪙 <b style="color:#ffd700;font-size:20px;">${(user.balance||0).toLocaleString()}</b></div></div><div style="display:flex;gap:20px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);"><span style="color:#2ed573;">📈 +${ti.toLocaleString()}</span><span style="color:#ff4757;">📉 -${to.toLocaleString()}</span><span style="color:#5f91ff;">📊 ${history.length} GD</span></div></div><div class="card"><div class="card-title">📋 Chi tiết</div><div style="max-height:500px;overflow-y:auto;">`;
+                    history.forEach((h,i) => { const sign = h.amount >= 0 ? '+' : ''; const date = h.timestamp ? new Date(h.timestamp).toLocaleString('vi-VN') : 'N/A'; html += `<div style="padding:10px;border-bottom:1px solid rgba(255,255,255,0.05);display:flex;justify-content:space-between;background:${i%2===0?'rgba(255,255,255,0.02)':'rgba(255,255,255,0.06)'};"><div><span style="color:${tc[h.type]||'#fff'};font-weight:600;">${tl[h.type]||h.type}</span> <span style="font-size:12px;color:var(--text2);">${h.detail||''}</span></div><div><span style="color:${h.amount>=0?'#2ed573':'#ff4757'};font-weight:bold;">${sign}${h.amount.toLocaleString()} 🪙</span> <span style="font-size:11px;color:var(--text2);">${date}</span></div></div>`; });
+                    html += '</div></div>'; document.getElementById('historyResult').innerHTML = html;
+                } catch (e) { document.getElementById('historyResult').innerHTML = '<div class="card" style="border-color:#ff4757;"><p style="color:#ff4757;">❌ Có lỗi!</p></div>'; }
+                finally { btn.textContent = orig; btn.disabled = false; }
+            };
+        }
+
+        else if (tab === 'config') {
+            const configSnap = await FB.db.ref('admin_config').once('value');
+            const config = configSnap.val() || {};
+            const rate = config.exchange_rate || CONFIG.exchange_rate;
+            const dailyRewards = config.dailyRewards || CONFIG.dailyRewards;
+            const linksForChest = config.linksForChest || CONFIG.linksForChest;
+            const linkCooldown = config.linkCooldown ? config.linkCooldown / 60000 : CONFIG.linkCooldown / 60000;
+            const maxCodesPerDay = config.maxCodesPerDay || CONFIG.maxCodesPerDay;
+            const chestRewards = config.chestRewards || CONFIG.chestRewards;
+            const friendRewards = config.friendRewards || CONFIG.friendRewards;
+            const codeResetDays = config.codeResetDays || CONFIG.codeResetDays;
+            content.innerHTML = `
+                <div class="card"><div class="card-title">📅 Điểm danh 7 ngày</div><label class="input-label">🪙 thưởng 7 ngày (cách nhau dấu phẩy)</label><input class="input" id="cfgDailyRewards" value="${dailyRewards.join(',')}"></div>
+                <div class="card"><div class="card-title">🎁 Rương & Link</div><label class="input-label">Số link mở rương</label><input class="input" id="cfgLinksForChest" type="number" value="${linksForChest}"><label class="input-label">Thời gian chờ (phút)</label><input class="input" id="cfgLinkCooldown" type="number" value="${linkCooldown}"><label class="input-label">🔢 Giới hạn mã/ngày</label><input class="input" id="cfgMaxCodesPerDay" type="number" value="${maxCodesPerDay}"><label class="input-label">🪙 thưởng rương</label><input class="input" id="cfgChestRewards" value="${chestRewards.join(',')}"></div>
+                <div class="card"><div class="card-title">👥 Bạn bè</div><label class="input-label">Thưởng mời bạn</label><input class="input" id="cfgFriendRewards" value="${Object.entries(friendRewards).map(([k,v])=>`${k}:${v}`).join(',')}"></div>
+                <div class="card"><div class="card-title">🔄 Reset mã</div><label class="input-label">Số ngày reset mã đã dùng</label><input class="input" id="cfgCodeResetDays" type="number" value="${codeResetDays}" min="1"><p style="font-size:11px;color:var(--text2);">Sau số ngày này, mã đã dùng có thể dùng lại</p></div>
+                <div class="card"><div class="card-title">💸 Rút 🪙</div><label class="input-label">Rút tối thiểu</label><input class="input" id="cfgMinWithdraw" type="number" value="${config.minWithdraw || CONFIG.minWithdraw}"><label class="input-label">Rút tối đa/lần</label><input class="input" id="cfgMaxWithdraw" type="number" value="${config.maxWithdraw || CONFIG.maxWithdraw}"><label class="input-label">💱 Tỷ giá</label><input class="input" id="cfgRate" type="number" value="${rate}"></div>
                 <button class="btn btn-primary" id="saveConfig">💾 Lưu cấu hình</button>`;
             document.getElementById('saveConfig').onclick = async () => {
-                const btn = document.getElementById('saveConfig');
-                btn.disabled = true; btn.textContent = '⏳...';
+                const btn = document.getElementById('saveConfig'); const orig = btn.textContent; btn.textContent = '⏳...'; btn.disabled = true;
                 try {
-                    const nc = {
+                    await FB.db.ref('admin_config').update({
                         dailyRewards: document.getElementById('cfgDailyRewards').value.split(',').map(Number),
                         linksForChest: parseInt(document.getElementById('cfgLinksForChest').value) || 5,
                         linkCooldown: (parseInt(document.getElementById('cfgLinkCooldown').value) || 5) * 60000,
@@ -968,193 +1202,57 @@ class AdminPage {
                         minWithdraw: parseInt(document.getElementById('cfgMinWithdraw').value) || 20000,
                         maxWithdraw: parseInt(document.getElementById('cfgMaxWithdraw').value) || 100000,
                         exchange_rate: parseInt(document.getElementById('cfgRate').value) || 10
-                    };
-                    await FB.db.ref('admin_config').update(nc);
-                    await FB.loadConfig();
-                    this.app.toast('Đã lưu!', 'success');
-                    this.loadTab('config');
+                    });
+                    await FB.loadConfig(); this.app.toast('Đã lưu!', 'success'); this.loadTab('config');
                 } catch (e) { this.app.toast('Có lỗi!', 'error'); }
-                finally { btn.disabled = false; btn.textContent = '💾 Lưu cấu hình'; }
+                finally { btn.textContent = orig; btn.disabled = false; }
             };
         }
 
         else if (tab === 'fund') {
-            const fs = await FB.db.ref('prize_fund').once('value');
-            const fund = fs.val() || 0;
+            const fs = await FB.db.ref('prize_fund').once('value'); const fund = fs.val() || 0;
             content.innerHTML = `<div class="card"><div class="card-title">💰 Quỹ hiện tại</div><p style="font-size:32px;font-weight:bold;text-align:center;color:var(--gold);">${fund.toLocaleString()} 🪙</p></div><div class="card"><div class="card-title">➕ Nạp thêm</div><input class="input" id="fundAdd" type="number" placeholder="Số 🪙"><button class="btn btn-primary" id="btnAddFund">💰 Nạp vào quỹ</button></div>`;
-            document.getElementById('btnAddFund').onclick = async () => {
-                const add = parseInt(document.getElementById('fundAdd').value) || 0;
-                if (add <= 0) return this.app.toast('Nhập số!', 'warning');
-                try { await FB.db.ref('prize_fund').set(fund + add); this.app.toast(`Đã nạp ${add.toLocaleString()} 🪙!`, 'success'); this.loadTab('fund'); }
-                catch (e) { this.app.toast('Có lỗi!', 'error'); }
-            };
+            document.getElementById('btnAddFund').onclick = async () => { const add = parseInt(document.getElementById('fundAdd').value) || 0; if (add <= 0) return this.app.toast('Nhập số!', 'warning'); try { await FB.db.ref('prize_fund').set(fund + add); this.app.toast(`Đã nạp ${add.toLocaleString()} 🪙!`, 'success'); this.loadTab('fund'); } catch (e) { this.app.toast('Có lỗi!', 'error'); } };
+        }
+
+        else if (tab === 'tasks') {
+            const tasks = await FB.getTasks();
+            content.innerHTML = `<h3>📋 Nhiệm vụ</h3><input class="input" id="taskLink" placeholder="Link"><input class="input" id="taskCode" placeholder="Mã"><input class="input" id="taskReward" type="number" value="100" placeholder="🪙 thưởng"><input class="input" id="taskMaxUses" type="number" value="3" placeholder="Lượt dùng tối đa"><button class="btn btn-success" id="addTask">Thêm</button><div style="margin-top:10px;">${Object.entries(tasks).map(([id,t]) => `<div style="display:flex;justify-content:space-between;padding:5px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><span>${t.link?.substring(0,20)}... | ${t.code} | ${t.reward}🪙 | ${t.usedCount||0}/${t.maxUses||3} lượt</span><button class="btn-sm btn-danger" data-id="${id}">Xóa</button></div>`).join('')}</div>`;
+            document.getElementById('addTask').onclick = async () => { const link = document.getElementById('taskLink').value.trim(); const code = document.getElementById('taskCode').value.trim(); const reward = parseInt(document.getElementById('taskReward').value) || 100; const maxUses = parseInt(document.getElementById('taskMaxUses').value) || 3; if (!link || !code) return this.app.toast('Nhập đủ!', 'warning'); try { await FB.db.ref('tasks').push({ link, code, reward, active: true, maxUses: maxUses, usedCount: 0 }); this.app.toast('Đã thêm!', 'success'); this.loadTab('tasks'); } catch (e) { this.app.toast('Có lỗi!', 'error'); } };
+            document.querySelectorAll('.btn-danger').forEach(btn => btn.onclick = async () => { if (!confirm('Xóa?')) return; try { await FB.db.ref(`tasks/${btn.dataset.id}`).remove(); this.app.toast('Đã xóa!', 'success'); this.loadTab('tasks'); } catch (e) { this.app.toast('Có lỗi!', 'error'); } });
         }
 
         else if (tab === 'giftcodes') {
-            const gs = await FB.db.ref('gift_codes').once('value');
-            const gifts = gs.val() || {};
+            const gs = await FB.db.ref('gift_codes').once('value'); const gifts = gs.val() || {};
             content.innerHTML = `<h3>🎁 Gift Code</h3><input class="input" id="giftName" placeholder="Tên code"><input class="input" id="giftReward" type="number" value="500" placeholder="🪙"><input class="input" id="giftMax" type="number" value="100" placeholder="Lượt dùng"><input class="input" id="giftExpiry" type="date"><button class="btn btn-success" id="createGift">Tạo</button><div style="margin-top:10px;">${Object.entries(gifts).map(([code,g]) => `<div style="padding:5px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><b>${code}</b> | ${g.reward}🪙 | ${g.usedCount||0}/${g.maxUses} | <button class="btn-sm btn-danger" data-code="${code}">Xóa</button></div>`).join('')}</div>`;
-            document.getElementById('createGift').onclick = async () => {
-                const name = document.getElementById('giftName').value.trim();
-                const reward = parseInt(document.getElementById('giftReward').value) || 500;
-                const maxUses = parseInt(document.getElementById('giftMax').value) || 100;
-                const expiry = document.getElementById('giftExpiry').value;
-                if (!name) return this.app.toast('Nhập tên!', 'warning');
-                try { await FB.db.ref(`gift_codes/${name}`).set({ reward, maxUses, usedCount: 0, expiry: expiry ? new Date(expiry).getTime() : null, active: true }); this.app.toast('Đã tạo!', 'success'); this.loadTab('giftcodes'); }
-                catch (e) { this.app.toast('Có lỗi!', 'error'); }
-            };
-            document.querySelectorAll('.btn-danger').forEach(btn => btn.onclick = async () => {
-                if (!confirm(`Xóa ${btn.dataset.code}?`)) return;
-                try { await FB.db.ref(`gift_codes/${btn.dataset.code}`).remove(); this.app.toast('Đã xóa!', 'success'); this.loadTab('giftcodes'); }
-                catch (e) { this.app.toast('Có lỗi!', 'error'); }
-            });
+            document.getElementById('createGift').onclick = async () => { const name = document.getElementById('giftName').value.trim(); const reward = parseInt(document.getElementById('giftReward').value) || 500; const maxUses = parseInt(document.getElementById('giftMax').value) || 100; const expiry = document.getElementById('giftExpiry').value; if (!name) return this.app.toast('Nhập tên!', 'warning'); try { await FB.db.ref(`gift_codes/${name}`).set({ reward, maxUses, usedCount: 0, expiry: expiry ? new Date(expiry).getTime() : null, active: true }); this.app.toast('Đã tạo!', 'success'); this.loadTab('giftcodes'); } catch (e) { this.app.toast('Có lỗi!', 'error'); } };
+            document.querySelectorAll('.btn-danger').forEach(btn => btn.onclick = async () => { if (!confirm(`Xóa ${btn.dataset.code}?`)) return; try { await FB.db.ref(`gift_codes/${btn.dataset.code}`).remove(); this.app.toast('Đã xóa!', 'success'); this.loadTab('giftcodes'); } catch (e) { this.app.toast('Có lỗi!', 'error'); } });
         }
 
         else if (tab === 'withdraws') {
-            const ws = await FB.db.ref('withdraw_requests').once('value');
-            const withdraws = []; ws.forEach(c => withdraws.push({ id: c.key, ...c.val() }));
-            withdraws.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            const ws = await FB.db.ref('withdraw_requests').once('value'); const withdraws = []; ws.forEach(c => withdraws.push({ id: c.key, ...c.val() })); withdraws.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
             content.innerHTML = `<h3>💸 Rút 🪙</h3><div style="display:flex;gap:8px;margin-bottom:12px;"><button class="btn btn-sm btn-primary filter-withdraw active" data-filter="all">Tất cả</button><button class="btn btn-sm btn-warning filter-withdraw" data-filter="pending">🟡 Chờ</button><button class="btn btn-sm btn-success filter-withdraw" data-filter="approved">🟢 Duyệt</button><button class="btn btn-sm btn-danger filter-withdraw" data-filter="rejected">🔴 Từ chối</button></div><div id="withdrawList">${withdraws.map(w => `<div class="withdraw-item" data-status="${w.status}" style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><p>👤 ${w.username} | 🪙 ${w.amountXu.toLocaleString()}</p><p>🏦 ${w.bank} | ${w.accountNumber}</p><span class="badge badge-${w.status}">${w.status}</span>${w.status==='pending'?`<button class="btn-sm btn-success approve" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Duyệt</button><button class="btn-sm btn-danger reject" data-id="${w.id}" data-uid="${w.userId}" data-amount="${w.amountXu}">Từ chối</button>`:''}</div>`).join('')}</div>`;
-            document.querySelectorAll('.filter-withdraw').forEach(btn => btn.onclick = () => {
-                document.querySelectorAll('.filter-withdraw').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                document.querySelectorAll('.withdraw-item').forEach(item => item.style.display = (btn.dataset.filter === 'all' || item.dataset.status === btn.dataset.filter) ? 'block' : 'none');
-            });
-            document.querySelectorAll('.approve').forEach(btn => btn.onclick = async () => {
-                if (!confirm('Duyệt?')) return;
-                try { await FB.db.ref(`withdraw_requests/${btn.dataset.id}`).update({ status: 'approved' }); this.app.toast('Đã duyệt!', 'success'); this.loadTab('withdraws'); }
-                catch (e) { this.app.toast('Có lỗi!', 'error'); }
-            });
-            document.querySelectorAll('.reject').forEach(btn => btn.onclick = async () => {
-                if (!confirm('Từ chối?')) return;
-                try { await FB.addBalance(btn.dataset.uid, parseInt(btn.dataset.amount)); await FB.db.ref(`withdraw_requests/${btn.dataset.id}`).update({ status: 'rejected' }); this.app.toast('Đã từ chối!', 'warning'); this.loadTab('withdraws'); }
-                catch (e) { this.app.toast('Có lỗi!', 'error'); }
-            });
+            document.querySelectorAll('.filter-withdraw').forEach(btn => btn.onclick = () => { document.querySelectorAll('.filter-withdraw').forEach(b => b.classList.remove('active')); btn.classList.add('active'); document.querySelectorAll('.withdraw-item').forEach(item => item.style.display = (btn.dataset.filter === 'all' || item.dataset.status === btn.dataset.filter) ? 'block' : 'none'); });
+            document.querySelectorAll('.approve').forEach(btn => btn.onclick = async () => { if (!confirm('Duyệt?')) return; try { await FB.db.ref(`withdraw_requests/${btn.dataset.id}`).update({ status: 'approved' }); this.app.toast('Đã duyệt!', 'success'); this.loadTab('withdraws'); } catch (e) { this.app.toast('Có lỗi!', 'error'); } });
+            document.querySelectorAll('.reject').forEach(btn => btn.onclick = async () => { if (!confirm('Từ chối?')) return; try { await FB.addBalance(btn.dataset.uid, parseInt(btn.dataset.amount)); await FB.db.ref(`withdraw_requests/${btn.dataset.id}`).update({ status: 'rejected' }); this.app.toast('Đã từ chối!', 'warning'); this.loadTab('withdraws'); } catch (e) { this.app.toast('Có lỗi!', 'error'); } });
         }
 
         else if (tab === 'users') {
             content.innerHTML = `<h3>👥 Users</h3><div style="display:flex;gap:8px;margin-bottom:12px;"><input class="input" id="searchUser" placeholder="Tìm ID hoặc username..."><button class="btn btn-sm btn-primary" id="searchBtn">🔍 Tìm</button></div><div id="userResult">Đang tải...</div>`;
-            const snap = await FB.db.ref('users').once('value');
-            const allUsers = Object.entries(snap.val() || {}).sort((a, b) => (b[1].balance || 0) - (a[1].balance || 0));
-            const renderUsers = (users) => {
-                document.getElementById('userResult').innerHTML = users.map(([id, u]) => `<div style="padding:8px;background:rgba(255,255,255,0.05);margin-top:5px;border-radius:5px;"><p><b>${u.username||'Unknown'}</b> (${id})</p><p>🪙: ${(u.balance||0).toLocaleString()} | 🔗 ${u.completedLinks||0}</p><div style="display:flex;gap:8px;"><input class="input" id="editBal_${id}" type="number" placeholder="Sửa 🪙" style="margin-bottom:0;flex:1;"><button class="btn-sm btn-primary editBal" data-uid="${id}">Lưu</button>${!u.isBanned?`<button class="btn-sm btn-danger banUser" data-uid="${id}">Khóa</button>`:`<button class="btn-sm btn-success unbanUser" data-uid="${id}">Mở khóa</button>`}</div></div>`).join('');
-                document.querySelectorAll('.editBal').forEach(b => b.onclick = async () => { const v = parseInt(document.getElementById(`editBal_${b.dataset.uid}`).value); if (!isNaN(v)) { await FB.updateUser(b.dataset.uid, { balance: v }); this.app.toast('Đã lưu!', 'success'); } });
-                document.querySelectorAll('.banUser').forEach(b => b.onclick = async () => { if (confirm('Khóa?')) { await FB.updateUser(b.dataset.uid, { isBanned: true }); this.app.toast('Đã khóa!', 'success'); this.loadTab('users'); } });
-                document.querySelectorAll('.unbanUser').forEach(b => b.onclick = async () => { if (confirm('Mở?')) { await FB.updateUser(b.dataset.uid, { isBanned: false }); this.app.toast('Đã mở!', 'success'); this.loadTab('users'); } });
-            };
-            renderUsers(allUsers);
-            document.getElementById('searchBtn').onclick = () => { const kw = document.getElementById('searchUser').value.trim().toLowerCase(); renderUsers(kw ? allUsers.filter(([id, u]) => id.includes(kw) || (u.username||'').toLowerCase().includes(kw)) : allUsers); };
+            const snap = await FB.db.ref('users').once('value'); const allUsers = Object.entries(snap.val() || {}).sort((a, b) => (b[1].balance || 0) - (a[1].balance || 0));
+            const renderUsers = (users) => { document.getElementById('userResult').innerHTML = users.map(([id, u]) => `<div style="padding:8px;background:rgba(255,255,255,0.05);margin-top:5px;border-radius:5px;"><p><b>${u.username||'Unknown'}</b> (${id})</p><p>🪙: ${(u.balance||0).toLocaleString()} | 🔗 ${u.completedLinks||0}</p><div style="display:flex;gap:8px;"><input class="input" id="editBal_${id}" type="number" placeholder="Sửa 🪙" style="margin-bottom:0;flex:1;"><button class="btn-sm btn-primary editBal" data-uid="${id}">Lưu</button>${!u.isBanned?`<button class="btn-sm btn-danger banUser" data-uid="${id}">Khóa</button>`:`<button class="btn-sm btn-success unbanUser" data-uid="${id}">Mở khóa</button>`}</div></div>`).join(''); document.querySelectorAll('.editBal').forEach(b => b.onclick = async () => { const v = parseInt(document.getElementById(`editBal_${b.dataset.uid}`).value); if (!isNaN(v)) { await FB.updateUser(b.dataset.uid, { balance: v }); this.app.toast('Đã lưu!', 'success'); } }); document.querySelectorAll('.banUser').forEach(b => b.onclick = async () => { if (confirm('Khóa?')) { await FB.updateUser(b.dataset.uid, { isBanned: true }); this.app.toast('Đã khóa!', 'success'); this.loadTab('users'); } }); document.querySelectorAll('.unbanUser').forEach(b => b.onclick = async () => { if (confirm('Mở?')) { await FB.updateUser(b.dataset.uid, { isBanned: false }); this.app.toast('Đã mở!', 'success'); this.loadTab('users'); } }); };
+            renderUsers(allUsers); document.getElementById('searchBtn').onclick = () => { const kw = document.getElementById('searchUser').value.trim().toLowerCase(); renderUsers(kw ? allUsers.filter(([id, u]) => id.includes(kw) || (u.username||'').toLowerCase().includes(kw)) : allUsers); };
         }
 
-        else if (tab === 'leaderboard') {
-            const tl = await FB.getTopLinks(10);
-            const tf = await FB.getTopFriends(10);
-            content.innerHTML = `<div class="grid-2"><div class="card"><div class="card-title">🏆 Top link</div>${tl.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username}</span><span style="margin-left:auto;">🔗 ${u.links}</span></div>`).join('')}</div><div class="card"><div class="card-title">👥 Top bạn</div>${tf.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username}</span><span style="margin-left:auto;">👥 ${u.friends}</span></div>`).join('')}</div></div>`;
-        }
+        else if (tab === 'leaderboard') { const tl = await FB.getTopLinks(10); const tf = await FB.getTopFriends(10); content.innerHTML = `<div class="grid-2"><div class="card"><div class="card-title">🏆 Top link</div>${tl.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username}</span><span style="margin-left:auto;">🔗 ${u.links}</span></div>`).join('')}</div><div class="card"><div class="card-title">👥 Top bạn</div>${tf.map((u,i) => `<div class="leaderboard-item"><span class="leaderboard-rank ${i<3?'rank-'+(i+1):''}">#${i+1}</span><span>${u.username}</span><span style="margin-left:auto;">👥 ${u.friends}</span></div>`).join('')}</div></div>`; }
 
-        else if (tab === 'notify') {
-            content.innerHTML = `<div class="card"><div class="card-title">📢 Gửi thông báo</div><textarea class="input" id="notifyMsg" rows="3" placeholder="Nội dung..."></textarea><button class="btn btn-warning" id="btnNotify">📢 Gửi</button></div><div class="card"><div class="card-title">📋 Lịch sử</div><div id="notifyHistory">Đang tải...</div></div>`;
-            document.getElementById('btnNotify').onclick = async () => {
-                const msg = document.getElementById('notifyMsg').value.trim();
-                if (!msg) return this.app.toast('Nhập nội dung!', 'warning');
-                await FB.db.ref('notifications').push({ message: msg, sentBy: this.app.user.username, timestamp: firebase.database.ServerValue.TIMESTAMP });
-                this.app.toast('Đã gửi!', 'success');
-                document.getElementById('notifyMsg').value = '';
-                this.loadTab('notify');
-            };
-            const ns = await FB.db.ref('notifications').orderByChild('timestamp').limitToLast(10).once('value');
-            const notifies = []; ns.forEach(c => notifies.push(c.val())); notifies.reverse();
-            document.getElementById('notifyHistory').innerHTML = notifies.map(n => `<div style="padding:5px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;">• ${new Date(n.timestamp).toLocaleString('vi-VN')} - ${n.message}</div>`).join('') || '<p>Chưa có</p>';
-        }
+        else if (tab === 'notify') { content.innerHTML = `<div class="card"><div class="card-title">📢 Gửi thông báo</div><textarea class="input" id="notifyMsg" rows="3" placeholder="Nội dung..."></textarea><button class="btn btn-warning" id="btnNotify">📢 Gửi</button></div><div class="card"><div class="card-title">📋 Lịch sử</div><div id="notifyHistory">Đang tải...</div></div>`; document.getElementById('btnNotify').onclick = async () => { const msg = document.getElementById('notifyMsg').value.trim(); if (!msg) return this.app.toast('Nhập nội dung!', 'warning'); await FB.db.ref('notifications').push({ message: msg, sentBy: this.app.user.username, timestamp: firebase.database.ServerValue.TIMESTAMP }); this.app.toast('Đã gửi!', 'success'); document.getElementById('notifyMsg').value = ''; this.loadTab('notify'); }; const ns = await FB.db.ref('notifications').orderByChild('timestamp').limitToLast(10).once('value'); const notifies = []; ns.forEach(c => notifies.push(c.val())); notifies.reverse(); document.getElementById('notifyHistory').innerHTML = notifies.map(n => `<div style="padding:5px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;">• ${new Date(n.timestamp).toLocaleString('vi-VN')} - ${n.message}</div>`).join('') || '<p>Chưa có</p>'; }
 
-        else if (tab === 'logs') {
-            const ls = await FB.db.ref('admin_logs').orderByChild('timestamp').limitToLast(50).once('value');
-            const logs = []; ls.forEach(c => logs.push(c.val())); logs.reverse();
-            content.innerHTML = `<h3>📝 Log</h3>${logs.map(l => `<div style="padding:5px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;">• ${l.adminId} - ${l.action} - ${new Date(l.timestamp).toLocaleString('vi-VN')}</div>`).join('') || '<p>Chưa có</p>'}`;
-        }
+        else if (tab === 'logs') { const ls = await FB.db.ref('admin_logs').orderByChild('timestamp').limitToLast(50).once('value'); const logs = []; ls.forEach(c => logs.push(c.val())); logs.reverse(); content.innerHTML = `<h3>📝 Log</h3>${logs.map(l => `<div style="padding:5px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;">• ${l.adminId} - ${l.action} - ${new Date(l.timestamp).toLocaleString('vi-VN')}</div>`).join('') || '<p>Chưa có</p>'}`; }
 
-        else if (tab === 'security') {
-            const as = await FB.db.ref('admin_alerts').orderByChild('timestamp').limitToLast(50).once('value');
-            const alerts = []; as.forEach(c => alerts.push({ id: c.key, ...c.val() })); alerts.reverse();
-            content.innerHTML = `<h3>🛡️ Cảnh báo</h3>${alerts.map(a => `<div style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><p><b>${a.type}</b> - ${a.username}</p>${a.status==='unread'?`<button class="btn-sm btn-warning" data-id="${a.id}">Đã xem</button>`:''}</div>`).join('') || '<p>Không có</p>'}`;
-            document.querySelectorAll('.btn-warning').forEach(b => b.onclick = async () => { await FB.db.ref(`admin_alerts/${b.dataset.id}/status`).set('reviewed'); this.loadTab('security'); });
-        }
+        else if (tab === 'security') { const as = await FB.db.ref('admin_alerts').orderByChild('timestamp').limitToLast(50).once('value'); const alerts = []; as.forEach(c => alerts.push({ id: c.key, ...c.val() })); alerts.reverse(); content.innerHTML = `<h3>🛡️ Cảnh báo</h3>${alerts.map(a => `<div style="padding:8px;background:rgba(255,255,255,0.05);border-radius:5px;margin-bottom:5px;"><p><b>${a.type}</b> - ${a.username}</p>${a.status==='unread'?`<button class="btn-sm btn-warning" data-id="${a.id}">Đã xem</button>`:''}</div>`).join('') || '<p>Không có</p>'}`; document.querySelectorAll('.btn-warning').forEach(b => b.onclick = async () => { await FB.db.ref(`admin_alerts/${b.dataset.id}/status`).set('reviewed'); this.loadTab('security'); }); }
 
-        else if (tab === 'theme') {
-            const cs = await FB.db.ref('admin_config').once('value');
-            const cfg = cs.val() || {};
-            content.innerHTML = `
-                <div class="card"><div class="card-title">🌟 Màu sao băng</div><div style="display:flex;gap:8px;"><input type="color" id="cfgStarColorPicker" value="${cfg.starColor||CONFIG.starColor}" style="width:50px;height:40px;"><input class="input" id="cfgStarColorHex" value="${cfg.starColor||CONFIG.starColor}"></div></div>
-                <div class="card"><div class="card-title">🌌 Màu nền</div><label>Trên:</label><div style="display:flex;gap:8px;"><input type="color" id="cfgBgColor1Picker" value="${cfg.bgColor1||CONFIG.bgColor1}" style="width:50px;height:40px;"><input class="input" id="cfgBgColor1Hex" value="${cfg.bgColor1||CONFIG.bgColor1}"></div><label>Dưới:</label><div style="display:flex;gap:8px;"><input type="color" id="cfgBgColor2Picker" value="${cfg.bgColor2||CONFIG.bgColor2}" style="width:50px;height:40px;"><input class="input" id="cfgBgColor2Hex" value="${cfg.bgColor2||CONFIG.bgColor2}"></div></div>
-                <button class="btn btn-primary" id="saveTheme">💾 Lưu</button>`;
-            ['cfgStarColor','cfgBgColor1','cfgBgColor2'].forEach(id => {
-                const p = document.getElementById(id+'Picker'), h = document.getElementById(id+'Hex');
-                p.addEventListener('input', () => h.value = p.value);
-                h.addEventListener('input', () => { if (/^#[0-9A-Fa-f]{6}$/.test(h.value)) p.value = h.value; });
-            });
-            document.getElementById('saveTheme').onclick = async () => {
-                await FB.db.ref('admin_config').update({ starColor: document.getElementById('cfgStarColorHex').value, bgColor1: document.getElementById('cfgBgColor1Hex').value, bgColor2: document.getElementById('cfgBgColor2Hex').value });
-                await FB.loadConfig();
-                this.app.applyTheme();
-                this.app.toast('Đã lưu!', 'success');
-            };
-        }
-
-        else if (tab === 'history') {
-            content.innerHTML = `<div class="card"><div class="card-title">📊 Lịch sử giao dịch</div><div style="display:flex;gap:8px;"><input class="input" id="searchHistoryUser" placeholder="Nhập User ID..." style="margin-bottom:0;flex:1;"><button class="btn btn-primary" id="searchHistoryBtn">🔍 Tìm</button></div></div><div id="historyResult"><p style="text-align:center;color:var(--text2);padding:30px 0;">🔍 Nhập User ID để xem</p></div>`;
-            const ps = async () => {
-                const uid = document.getElementById('searchHistoryUser').value.trim();
-                if (!uid) return;
-                const user = await FB.getUser(uid);
-                if (!user) { document.getElementById('historyResult').innerHTML = '<p style="color:#ff4757;">❌ Không tìm thấy</p>'; return; }
-                const history = await FB.getTransactionHistory(uid, 500);
-                if (history.length === 0) { document.getElementById('historyResult').innerHTML = `<div class="card"><p>👤 ${user.username}</p><p>🪙 ${(user.balance||0).toLocaleString()}</p><p>📭 Chưa có giao dịch</p></div>`; return; }
-                let ti = 0, to = 0;
-                history.forEach(h => { if (h.amount > 0) ti += h.amount; else to += Math.abs(h.amount); });
-                const tl = { daily:'📅 Điểm danh', task:'🔗 Vượt link', chest:'🎁 Rương', gift:'🎫 Gift', friend:'👥 Bạn', withdraw:'💸 Rút' };
-                const tc = { daily:'#2ed573', task:'#5f91ff', chest:'#ffd700', gift:'#ff6b81', friend:'#a29bfe', withdraw:'#ff4757' };
-                document.getElementById('historyResult').innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;"><div><b>👤 ${user.username}</b><br>🆔 ${uid}</div><div>🪙 <b style="color:#ffd700;font-size:20px;">${(user.balance||0).toLocaleString()}</b></div></div><div style="display:flex;gap:20px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);"><span style="color:#2ed573;">📈 +${ti.toLocaleString()}</span><span style="color:#ff4757;">📉 -${to.toLocaleString()}</span><span style="color:#5f91ff;">📊 ${history.length} GD</span></div></div><div class="card"><div class="card-title">📋 Chi tiết</div><div style="max-height:500px;overflow-y:auto;">${history.map((h,i) => { const sign = h.amount >= 0 ? '+' : ''; const date = h.timestamp ? new Date(h.timestamp).toLocaleString('vi-VN') : 'N/A'; return `<div style="padding:10px;border-bottom:1px solid rgba(255,255,255,0.05);display:flex;justify-content:space-between;background:${i%2===0?'rgba(255,255,255,0.02)':'rgba(255,255,255,0.06)'};"><div><span style="color:${tc[h.type]||'#fff'};font-weight:600;">${tl[h.type]||h.type}</span> <span style="font-size:12px;color:var(--text2);">${h.detail||''}</span></div><div><span style="color:${h.amount>=0?'#2ed573':'#ff4757'};font-weight:bold;">${sign}${h.amount.toLocaleString()} 🪙</span> <span style="font-size:11px;color:var(--text2);">${date}</span></div></div>`; }).join('')}</div></div>`;
-            };
-            document.getElementById('searchHistoryBtn').onclick = ps;
-            document.getElementById('searchHistoryUser').addEventListener('keypress', e => { if (e.key === 'Enter') ps(); });
-        }
-    }
-
-    async showEditLinkType(typeId) {
-        const typeCfg = CONFIG.linkTypes[typeId];
-        if (!typeCfg) return;
-        const content = document.getElementById('adminTabContent');
-        content.innerHTML = `
-            <div class="card"><div class="card-title">✏️ Sửa: ${typeCfg.name}</div>
-            <label>Tên:</label><input class="input" id="editLinkName" value="${typeCfg.name}">
-            <label>ID: <b>${typeId}</b></label>
-            <label>Lượt/ngày:</label><input class="input" id="editLinkMax" type="number" value="${typeCfg.maxPerDay||3}">
-            <label>🪙 Thưởng:</label><input class="input" id="editLinkReward" type="number" value="${typeCfg.reward||100}">
-            <label>Icon:</label><input class="input" id="editLinkIcon" value="${typeCfg.icon||'🔗'}">
-            <label>Màu:</label><div style="display:flex;gap:6px;"><input type="color" id="editLinkColorPicker" value="${typeCfg.color||'#ff00ff'}" style="width:40px;height:40px;"><input class="input" id="editLinkColor" value="${typeCfg.color||'#ff00ff'}"></div>
-            <label>URL:</label><input class="input" id="editLinkUrl" value="${typeCfg.url||''}">
-            <div style="display:flex;gap:10px;margin-top:15px;"><button class="btn btn-primary" id="saveEditLinkType">💾 Lưu</button><button class="btn btn-warning" id="cancelEditLinkType">↩️ Quay lại</button></div></div>`;
-        const picker = document.getElementById('editLinkColorPicker'), input = document.getElementById('editLinkColor');
-        picker.addEventListener('input', () => input.value = picker.value);
-        input.addEventListener('input', () => { if (/^#[0-9A-Fa-f]{6}$/.test(input.value)) picker.value = input.value; });
-        document.getElementById('cancelEditLinkType').onclick = () => this.loadTab('linktypes');
-        document.getElementById('saveEditLinkType').onclick = async () => {
-            const name = document.getElementById('editLinkName').value.trim();
-            const maxPerDay = parseInt(document.getElementById('editLinkMax').value) || 3;
-            const reward = parseInt(document.getElementById('editLinkReward').value) || 100;
-            const icon = document.getElementById('editLinkIcon').value.trim() || '🔗';
-            const color = document.getElementById('editLinkColor').value.trim() || '#ff00ff';
-            const url = document.getElementById('editLinkUrl').value.trim();
-            if (!name || !url) return this.app.toast('Nhập đủ!', 'warning');
-            try {
-                const ut = { ...CONFIG.linkTypes };
-                ut[typeId] = { name, maxPerDay, reward, icon, color, url, active: ut[typeId]?.active !== false };
-                await FB.db.ref('admin_config/linkTypes').set(ut);
-                await FB.loadConfig();
-                this.app.toast('Đã cập nhật!', 'success');
-                this.loadTab('linktypes');
-            } catch (e) { this.app.toast('Có lỗi!', 'error'); }
-        };
+        else if (tab === 'theme') { const cs = await FB.db.ref('admin_config').once('value'); const cfg = cs.val() || {}; content.innerHTML = `<div class="card"><div class="card-title">🌟 Màu sao băng</div><div style="display:flex;gap:8px;"><input type="color" id="cfgStarColorPicker" value="${cfg.starColor||CONFIG.starColor}" style="width:50px;height:40px;"><input class="input" id="cfgStarColorHex" value="${cfg.starColor||CONFIG.starColor}"></div></div><div class="card"><div class="card-title">🌌 Màu nền</div><label>Trên:</label><div style="display:flex;gap:8px;"><input type="color" id="cfgBgColor1Picker" value="${cfg.bgColor1||CONFIG.bgColor1}" style="width:50px;height:40px;"><input class="input" id="cfgBgColor1Hex" value="${cfg.bgColor1||CONFIG.bgColor1}"></div><label>Dưới:</label><div style="display:flex;gap:8px;"><input type="color" id="cfgBgColor2Picker" value="${cfg.bgColor2||CONFIG.bgColor2}" style="width:50px;height:40px;"><input class="input" id="cfgBgColor2Hex" value="${cfg.bgColor2||CONFIG.bgColor2}"></div></div><button class="btn btn-primary" id="saveTheme">💾 Lưu</button>`; ['cfgStarColor','cfgBgColor1','cfgBgColor2'].forEach(id => { const p = document.getElementById(id+'Picker'), h = document.getElementById(id+'Hex'); p.addEventListener('input', () => h.value = p.value); h.addEventListener('input', () => { if (/^#[0-9A-Fa-f]{6}$/.test(h.value)) p.value = h.value; }); }); document.getElementById('saveTheme').onclick = async () => { await FB.db.ref('admin_config').update({ starColor: document.getElementById('cfgStarColorHex').value, bgColor1: document.getElementById('cfgBgColor1Hex').value, bgColor2: document.getElementById('cfgBgColor2Hex').value }); await FB.loadConfig(); this.app.applyTheme(); this.app.toast('Đã lưu!', 'success'); }; }
     }
 }
 
@@ -1175,33 +1273,38 @@ class CayXumMo {
             document.getElementById('loadingScreen').style.display = 'none'; document.getElementById('app').style.display = 'flex';
             this.setupNav(); this.loadPage('home'); this.refreshUserBar();
             FB.db.ref("notifications").orderByChild("timestamp").limitToLast(20).on("value", snap => {
-                const arr = []; snap.forEach(c => arr.push(c.val())); arr.reverse();
+                const arr = [];
+                snap.forEach(c => { arr.push(c.val()); });
+                arr.reverse();
                 this._notifications = arr;
                 const lastSeen = Number(localStorage.getItem("lastSeenNotify") || 0);
                 const newCount = arr.filter(n => n.timestamp > lastSeen).length;
                 const badge = document.getElementById("notifyBadge");
-                if (badge) { badge.textContent = newCount; badge.style.display = newCount > 0 ? "block" : "none"; }
+                if (badge) {
+                    if (newCount > 0) { badge.textContent = newCount; badge.style.display = "block"; }
+                    else { badge.style.display = "none"; }
+                }
             });
             document.getElementById('btnNotifications').onclick = () => this.showNotifications();
             this.applyTheme();
-            document.addEventListener('visibilitychange', () => { if (document.hidden && this.currentPage?.destroy) this.currentPage.destroy(); });
-        } catch (e) { document.getElementById('loadingScreen').innerHTML = `<div style="color:red;padding:20px;"><h3>❌ Lỗi:</h3><p>${e.message}</p></div>`; }
+            document.addEventListener('visibilitychange', () => { if (document.hidden && this.currentPage && this.currentPage.destroy) { this.currentPage.destroy(); } });
+        } catch (e) { document.getElementById('loadingScreen').innerHTML = `<div style="color:red;padding:20px;"><h3>❌ Lỗi khởi tạo:</h3><p>${e.message}</p></div>`; }
     }
     setupNav() {
         const items = [ { page:'home', icon:'🏠', label:'Trang chủ' }, { page:'tasks', icon:'📋', label:'Nhiệm vụ' }, { page:'friends', icon:'👥', label:'Bạn bè' }, { page:'leaderboard', icon:'🏆', label:'BXH' }, { page:'pvp', icon:'🎮', label:'PvP' }, { page:'account', icon:'👤', label:'Tài khoản' } ];
         if (this.isAdmin) items.push({ page:'admin', icon:'👑', label:'Admin' });
-        document.getElementById('bottomNav').innerHTML = items.map(i => `<button class="nav-btn" data-page="${i.page}"><span class="nav-icon">${i.icon}</span><span>${i.label}</span></button>`).join('');
-        document.querySelectorAll('.nav-btn').forEach(b => b.onclick = () => this.loadPage(b.dataset.page));
+        document.getElementById('bottomNav').innerHTML = items.map(item => `<button class="nav-btn" data-page="${item.page}"><span class="nav-icon">${item.icon}</span><span>${item.label}</span></button>`).join('');
+        document.querySelectorAll('.nav-btn').forEach(btn => btn.onclick = () => this.loadPage(btn.dataset.page));
     }
     async loadPage(page) {
-        if (this.currentPage?.destroy) this.currentPage.destroy();
-        const userData = await FB.getUser(this.user.id);
+        if (this.currentPage && this.currentPage.destroy) { this.currentPage.destroy(); }
+        const main = document.getElementById('mainContent'); const userData = await FB.getUser(this.user.id);
         const pages = { home: HomePage, tasks: TasksPage, friends: FriendsPage, leaderboard: LeaderboardPage, pvp: PvPPage, account: AccountPage, admin: AdminPage };
-        if (pages[page]) { this.currentPage = new pages[page](this, document.getElementById('mainContent'), userData); this.currentPage.render(); }
+        if (pages[page]) { this.currentPage = new pages[page](this, main, userData); this.currentPage.render(); }
         document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-        const active = document.querySelector(`.nav-btn[data-page="${page}"]`); if (active) active.classList.add('active');
+        const activeBtn = document.querySelector(`.nav-btn[data-page="${page}"]`); if (activeBtn) activeBtn.classList.add('active');
     }
-    async refreshUserBar() { const u = await FB.getUser(this.user.id); document.getElementById('userBar').innerHTML = `<span>👤 ${u.username}${this.isAdmin?' <span style="background:#ffd700;color:#000;padding:2px 8px;border-radius:10px;font-size:10px;">ADMIN</span>':''}</span><span>🪙 ${(u.balance||0).toLocaleString()}</span>`; }
+    async refreshUserBar() { const userData = await FB.getUser(this.user.id); document.getElementById('userBar').innerHTML = `<span>👤 ${userData.username}${this.isAdmin ? ' <span style="background:#ffd700;color:#000;padding:2px 8px;border-radius:10px;font-size:10px;">ADMIN</span>' : ''}</span><span>🪙 ${(userData.balance||0).toLocaleString()}</span>`; }
     toast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = `toast toast-${type} show`; setTimeout(() => t.classList.remove('show'), 2500); }
     applyTheme() {
         const starColor = CONFIG.starColor || DEFAULT_CONFIG.starColor;
@@ -1218,12 +1321,7 @@ class CayXumMo {
         const notifies = this._notifications || [];
         const html = notifies.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có thông báo</p>' : notifies.map(n => `<div class="notify-item"><p>${n.message}</p><p class="time">${new Date(n.timestamp).toLocaleString('vi-VN')}</p></div>`).join('');
         let popup = document.getElementById('notifyPopup');
-        if (!popup) {
-            popup = document.createElement('div'); popup.id = 'notifyPopup'; popup.className = 'notifications-popup';
-            popup.innerHTML = `<div class="popup-content"><button class="popup-close" id="closeNotifyPopup">✕</button><h3>📢 Thông báo</h3><div id="notifyList"></div></div>`;
-            document.body.appendChild(popup);
-            document.getElementById('closeNotifyPopup').onclick = () => popup.classList.remove('show');
-        }
+        if (!popup) { popup = document.createElement('div'); popup.id = 'notifyPopup'; popup.className = 'notifications-popup'; popup.innerHTML = `<div class="popup-content"><button class="popup-close" id="closeNotifyPopup">✕</button><h3>📢 Thông báo</h3><div id="notifyList"></div></div>`; document.body.appendChild(popup); document.getElementById('closeNotifyPopup').onclick = () => popup.classList.remove('show'); }
         document.getElementById('notifyList').innerHTML = html;
         popup.classList.add('show');
     }
