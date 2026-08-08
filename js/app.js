@@ -22,6 +22,66 @@ const DEFAULT_CONFIG = {
 };
 
 let CONFIG = { ...DEFAULT_CONFIG };
+// ==================== STORAGE WRAPPER ====================
+const Storage = {
+    _memory: {},
+    
+    getItem(key) {
+        try {
+            if (typeof localStorage !== 'undefined') {
+                return localStorage.getItem(key);
+            }
+        } catch (e) {
+            console.warn('localStorage không khả dụng, dùng memory storage');
+        }
+        return this._memory[key] || null;
+    },
+    
+    setItem(key, value) {
+        try {
+            if (typeof localStorage !== 'undefined') {
+                localStorage.setItem(key, value);
+                return;
+            }
+        } catch (e) {
+            console.warn('localStorage không khả dụng, dùng memory storage');
+        }
+        this._memory[key] = value;
+    },
+    
+    removeItem(key) {
+        try {
+            if (typeof localStorage !== 'undefined') {
+                localStorage.removeItem(key);
+                return;
+            }
+        } catch (e) {
+            console.warn('localStorage không khả dụng, dùng memory storage');
+        }
+        delete this._memory[key];
+    }
+};
+
+// ==================== TẠO ID DUY NHẤT ====================
+function generateUniqueId() {
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substr(2, 8);
+    return 'U_' + timestamp + '_' + random;
+}
+
+// ==================== MÃ HÓA MẬT KHẨU ====================
+async function hashPassword(password) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(password + 'cayxummo_salt_2024');
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function verifyPassword(inputPassword, hashedPassword) {
+    const inputHash = await hashPassword(inputPassword);
+    return inputHash === hashedPassword;
+}
 
 // ==================== FIREBASE ====================
 const firebaseConfig = {
@@ -812,7 +872,7 @@ class AccountPage {
     async render() {
         const u = this.userData; const rate = CONFIG.exchange_rate;
         this.container.innerHTML = `
-            <div class="card"><div class="card-title">👤 Tài khoản</div><p>👤 ${u.username}</p><p>🆔 ${u.id}</p><p>🪙 ${(u.balance||0).toLocaleString()}</p></div>
+            <div class="card"><div class="card-title">👤 Tài khoản</div><p>👤 ${u.username}</p><p>🆔 ${u.id}</p><p>🪙 ${(u.balance||0).toLocaleString()}</p><button class="btn btn-danger" id="btnLogout" style="margin-top:15px;width:100%;padding:12px;">🚪 Đăng xuất</button></div>
             <div class="card"><div class="card-title">💱 Tỷ giá</div><p>3.000 🪙 = ${(1000*rate).toLocaleString()}đ</p></div>
             <div class="card">
                 <div class="card-title">📢 Tham gia Group</div>
@@ -878,6 +938,11 @@ class AccountPage {
                 btn.disabled = false;
             }
         };
+        document.getElementById('btnLogout').onclick = () => {
+    if (confirm('Bạn có chắc muốn đăng xuất?')) {
+        this.app.logout();
+    }
+};
         this.loadHistory();
     }
     async loadHistory() {
@@ -1833,40 +1898,101 @@ class CayXumMo {
         this.currentPage = null;
     }
     async init() {
-        try {
-            await FB.loadConfig();
-            const initData = this.tg?.initDataUnsafe;
-            this.user = initData?.user ? { id: initData.user.id.toString(), username: initData.user.username || 'User' } : { id: 'test123', username: 'TestUser' };
-            await FB.createUser(this.user.id, this.user); this.isAdmin = await FB.isAdmin(this.user.id);
-            document.getElementById('loadingScreen').style.display = 'none'; document.getElementById('app').style.display = 'flex';
-            this.setupNav(); this.loadPage('home'); this.refreshUserBar();
-            FB.db.ref("notifications").orderByChild("timestamp").limitToLast(20).on("value", snap => {
-                const arr = [];
-                snap.forEach(c => { arr.push(c.val()); });
-                arr.reverse();
-                this._notifications = arr;
-                const lastSeen = Number(localStorage.getItem("lastSeenNotify") || 0);
-                const newCount = arr.filter(n => n.timestamp > lastSeen).length;
-                const badge = document.getElementById("notifyBadge");
-                if (badge) {
-                    if (newCount > 0) {
-                        badge.textContent = newCount;
-                        badge.style.display = "block";
-                    } else {
-                        badge.style.display = "none";
-                    }
+    try {
+        await FB.loadConfig();
+        
+        // Kiểm tra đăng nhập web trước
+        const savedId = Storage.getItem('cayxummo_uid');
+        const savedUsername = Storage.getItem('cayxummo_user');
+        
+        if (savedId) {
+            this.user = { 
+                id: savedId, 
+                username: savedUsername || 'User' 
+            };
+        } else if (this.tg?.initDataUnsafe?.user) {
+            const user = this.tg.initDataUnsafe.user;
+            this.user = { 
+                id: user.id.toString(), 
+                username: user.username || 'User' 
+            };
+        } else {
+            document.getElementById('loadingScreen').style.display = 'none';
+            document.getElementById('loginScreen').style.display = 'flex';
+            return;
+        }
+        
+        const userData = await FB.getUser(this.user.id);
+        if (!userData) {
+            if (this.tg?.initDataUnsafe?.user) {
+                await FB.createUser(this.user.id, this.user);
+            } else {
+                this.logout();
+                return;
+            }
+        }
+        
+        if (userData?.isBanned) {
+            this.toast('🚫 Tài khoản của bạn đã bị khóa!', 'error');
+            this.logout();
+            return;
+        }
+        
+        this.isAdmin = await FB.isAdmin(this.user.id);
+        
+        document.getElementById('loadingScreen').style.display = 'none';
+        document.getElementById('app').style.display = 'flex';
+        
+        this.setupNav();
+        this.loadPage('home');
+        this.refreshUserBar();
+        this.applyTheme();
+        
+        // Lắng nghe thông báo
+        FB.db.ref("notifications").orderByChild("timestamp").limitToLast(20).on("value", snap => {
+            const arr = [];
+            snap.forEach(c => { arr.push(c.val()); });
+            arr.reverse();
+            this._notifications = arr;
+            const lastSeen = Number(Storage.getItem("lastSeenNotify") || 0);
+            const newCount = arr.filter(n => n.timestamp > lastSeen).length;
+            const badge = document.getElementById("notifyBadge");
+            if (badge) {
+                if (newCount > 0) {
+                    badge.textContent = newCount;
+                    badge.style.display = "block";
+                } else {
+                    badge.style.display = "none";
                 }
-            });
-            document.getElementById('btnNotifications').onclick = () => this.showNotifications();
-            this.applyTheme();
-            
-            document.addEventListener('visibilitychange', () => {
-                if (document.hidden && this.currentPage && this.currentPage.destroy) {
-                    this.currentPage.destroy();
-                }
-            });
-        } catch (e) { document.getElementById('loadingScreen').innerHTML = `<div style="color:red;padding:20px;"><h3>❌ Lỗi khởi tạo:</h3><p>${e.message}</p></div>`; }
+            }
+        });
+        
+        document.getElementById('btnNotifications').onclick = () => this.showNotifications();
+        
+        // Auto refresh mỗi 30s
+        setInterval(() => {
+            if (this.user) {
+                this.refreshUserBar();
+            }
+        }, 30000);
+        
+        // Xử lý khi tab bị ẩn
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && this.currentPage && this.currentPage.destroy) {
+                this.currentPage.destroy();
+            }
+        });
+        
+    } catch (e) {
+        document.getElementById('loadingScreen').innerHTML = 
+            `<div style="color:red;padding:20px;">
+                <h3>❌ Lỗi khởi tạo:</h3>
+                <p>${e.message}</p>
+                <button onclick="location.reload()" style="margin-top:10px;padding:8px 20px;">🔄 Tải lại</button>
+            </div>`;
+        console.error(e);
     }
+}
     setupNav() {
         const items = [ { page:'home', icon:'🏠', label:'Trang chủ' }, { page:'tasks', icon:'📋', label:'Nhiệm vụ' }, { page:'friends', icon:'👥', label:'Bạn bè' }, { page:'leaderboard', icon:'🏆', label:'BXH' }, { page:'pvp', icon:'🎮', label:'PvP' }, { page:'account', icon:'👤', label:'Tài khoản' } ];
         if (this.isAdmin) items.push({ page:'admin', icon:'👑', label:'Admin' });
@@ -1914,8 +2040,25 @@ class CayXumMo {
         `;
     }
 
+logout() {
+    Storage.removeItem('cayxummo_uid');
+    Storage.removeItem('cayxummo_user');
+    
+    this.user = null;
+    this.isAdmin = false;
+    
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('loginForm').style.display = 'block';
+    document.getElementById('registerForm').style.display = 'none';
+    document.getElementById('loginUsername').value = '';
+    document.getElementById('loginPassword').value = '';
+    
+    this.toast('👋 Đã đăng xuất!', 'info');
+}
+
     showNotifications() {
-        localStorage.setItem('lastSeenNotify', Date.now());
+        Storage.setItem('lastSeenNotify', Date.now());
         document.getElementById('notifyBadge').style.display = 'none';
         const notifies = this._notifications || [];
         const html = notifies.length === 0 ? '<p style="text-align:center;color:var(--text2);">Chưa có thông báo</p>' : notifies.map(n => `<div class="notify-item"><p>${n.message}</p><p class="time">${new Date(n.timestamp).toLocaleString('vi-VN')}</p></div>`).join('');
@@ -1974,54 +2117,169 @@ function setupWebLogin() {
         document.getElementById('loginForm').style.display = 'block';
     };
     
-    // ĐĂNG NHẬP
+    // ===== ĐĂNG NHẬP =====
     document.getElementById('btnLogin').onclick = async () => {
-        const u = document.getElementById('loginUsername').value.trim();
-        const p = document.getElementById('loginPassword').value.trim();
-        if (!u || !p) return alert('Vui lòng nhập đầy đủ!');
+        const username = document.getElementById('loginUsername').value.trim();
+        const password = document.getElementById('loginPassword').value.trim();
         
-        const snap = await FB.db.ref('users').once('value');
-        const users = snap.val() || {};
-        for (let id in users) {
-            if (users[id].username === u && users[id].password === p) {
-                localStorage.setItem('cayxummo_uid', id);
-                localStorage.setItem('cayxummo_user', u);
-                window.app.user = { id, username: u };
-                document.getElementById('loginScreen').style.display = 'none';
-                window.app.init();
+        if (!username || !password) {
+            alert('⚠️ Vui lòng nhập đầy đủ thông tin!');
+            return;
+        }
+        
+        const btn = document.getElementById('btnLogin');
+        const originalText = btn.textContent;
+        btn.textContent = '⏳ Đang đăng nhập...';
+        btn.disabled = true;
+        
+        try {
+            const snap = await FB.db.ref('users').once('value');
+            const users = snap.val() || {};
+            
+            let foundUser = null;
+            let foundId = null;
+            
+            for (let id in users) {
+                if (users[id].username === username) {
+                    foundUser = users[id];
+                    foundId = id;
+                    break;
+                }
+            }
+            
+            if (!foundUser) {
+                alert('❌ Tên đăng nhập không tồn tại!');
+                btn.textContent = originalText;
+                btn.disabled = false;
                 return;
             }
+            
+            if (foundUser.isBanned) {
+                alert('🚫 Tài khoản của bạn đã bị khóa!');
+                btn.textContent = originalText;
+                btn.disabled = false;
+                return;
+            }
+            
+            const isValid = await verifyPassword(password, foundUser.password);
+            
+            if (!isValid) {
+                alert('❌ Sai mật khẩu!');
+                btn.textContent = originalText;
+                btn.disabled = false;
+                return;
+            }
+            
+            Storage.setItem('cayxummo_uid', foundId);
+            Storage.setItem('cayxummo_user', username);
+            
+            window.app.user = { 
+                id: foundId, 
+                username: username 
+            };
+            
+            document.getElementById('loginScreen').style.display = 'none';
+            window.app.init();
+            
+        } catch (error) {
+            alert('❌ Có lỗi xảy ra, vui lòng thử lại!');
+            console.error(error);
+        } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
         }
-        alert('❌ Sai tên đăng nhập hoặc mật khẩu!');
     };
     
-    // ĐĂNG KÝ
+    // ===== ĐĂNG KÝ =====
     document.getElementById('btnRegister').onclick = async () => {
-        const u = document.getElementById('regUsername').value.trim();
-        const p = document.getElementById('regPassword').value.trim();
-        if (!u || !p) return alert('Vui lòng nhập đầy đủ!');
-        if (p.length < 4) return alert('Mật khẩu ít nhất 4 ký tự!');
+        const username = document.getElementById('regUsername').value.trim();
+        const password = document.getElementById('regPassword').value.trim();
+        const confirmPassword = document.getElementById('regConfirmPassword').value.trim();
         
-        const snap = await FB.db.ref('users').once('value');
-        const users = snap.val() || {};
-        for (let id in users) {
-            if (users[id].username === u) return alert('❌ Tên đăng nhập đã tồn tại!');
+        if (!username || !password || !confirmPassword) {
+            alert('⚠️ Vui lòng nhập đầy đủ thông tin!');
+            return;
         }
         
-        const uid = 'web_' + Date.now();
-        await FB.db.ref('users/' + uid).set({
-            id: uid, username: u, password: p, balance: 0,
-            dailyStreak: 0, lastDaily: '', completedLinks: 0,
-            totalLinksWeekly: 0, totalLinksAllTime: 0,
-            friends: [], codesUsed: [], giftCodesUsed: [],
-            lastLinkTime: 0, chestsOpened: 0, isBanned: false,
-            createdAt: Date.now(), friendsCount: 0
-        });
+        if (username.length < 3) {
+            alert('⚠️ Tên đăng nhập phải có ít nhất 3 ký tự!');
+            return;
+        }
         
-        localStorage.setItem('cayxummo_uid', uid);
-        localStorage.setItem('cayxummo_user', u);
-        window.app.user = { id: uid, username: u };
-        document.getElementById('loginScreen').style.display = 'none';
-        window.app.init();
-    };
+        if (password.length < 4) {
+            alert('⚠️ Mật khẩu phải có ít nhất 4 ký tự!');
+            return;
+        }
+        
+        if (password !== confirmPassword) {
+            alert('⚠️ Mật khẩu xác nhận không khớp!');
+            return;
+        }
+        
+        const btn = document.getElementById('btnRegister');
+        const originalText = btn.textContent;
+        btn.textContent = '⏳ Đang đăng ký...';
+        btn.disabled = true;
+        
+        try {
+            const snap = await FB.db.ref('users').once('value');
+            const users = snap.val() || {};
+            
+            const exists = Object.values(users).some(u => 
+                u.username.toLowerCase() === username.toLowerCase()
+            );
+            
+            if (exists) {
+                alert('❌ Tên đăng nhập đã tồn tại!');
+                btn.textContent = originalText;
+                btn.disabled = false;
+                return;
             }
+            
+            const userId = generateUniqueId();
+            const hashedPassword = await hashPassword(password);
+            
+            await FB.db.ref('users/' + userId).set({
+                id: userId,
+                username: username,
+                password: hashedPassword,
+                displayName: username,
+                balance: 0,
+                dailyStreak: 0,
+                lastDaily: '',
+                completedLinks: 0,
+                totalLinksWeekly: 0,
+                totalLinksAllTime: 0,
+                friends: [],
+                invitedBy: '',
+                codesUsed: [],
+                giftCodesUsed: [],
+                lastLinkTime: 0,
+                chestsOpened: 0,
+                isBanned: false,
+                createdAt: Date.now(),
+                friendsCount: 0
+            });
+            
+            Storage.setItem('cayxummo_uid', userId);
+            Storage.setItem('cayxummo_user', username);
+            
+            window.app.user = { 
+                id: userId, 
+                username: username 
+            };
+            
+            document.getElementById('loginScreen').style.display = 'none';
+            window.app.init();
+            
+            alert('✅ Đăng ký thành công! Chào mừng bạn đến với CayXuMMO!');
+            
+        } catch (error) {
+            alert('❌ Có lỗi xảy ra, vui lòng thử lại!');
+            console.error(error);
+        } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
+    };
+}
