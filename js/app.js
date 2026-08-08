@@ -1932,4 +1932,4 @@ class CayXumMo {
         popup.classList.add('show');
     }
 }
-window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });entListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });
+window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });
