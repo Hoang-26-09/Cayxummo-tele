@@ -2086,16 +2086,15 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     
     // Nếu là Web → kiểm tra đã lưu đăng nhập chưa
-    const savedId = localStorage.getItem('cayxummo_uid');
-    if (savedId) {
-        // Đã đăng nhập → vào app luôn
-        window.app.user = { 
-            id: savedId, 
-            username: localStorage.getItem('cayxummo_user') || 'User' 
-        };
-        window.app.init();
-        return;
-    }
+    const savedId = Storage.getItem('cayxummo_uid');
+if (savedId) {
+    window.app.user = { 
+        id: savedId, 
+        username: Storage.getItem('cayxummo_user') || 'User' 
+    };
+    window.app.init();
+    return;
+}
     
     // Chưa đăng nhập → hiện form login
     document.getElementById('loadingScreen').style.display = 'none';
