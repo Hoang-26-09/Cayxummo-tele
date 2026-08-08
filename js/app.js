@@ -140,7 +140,7 @@ class FirebaseManager {
         return (await ref.once('value')).val();
     }
 
-    User(uid) { return (await this.db.ref('users/' + uid).once('value')).val(); }
+    async getUser(uid) { return (await this.db.ref('users/' + uid).once('value')).val(); }
     async updateUser(uid, data) { 
         await this.db.ref('users/' + uid).update(data); 
     }
