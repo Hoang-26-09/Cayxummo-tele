@@ -678,7 +678,7 @@ class TasksPage {
                     currentTaskType: null
                 });
                 await FB.addTransactionHistory(this.app.user.id, 'task', reward, `Vượt link [${ltCfg?.name || 'Mặc định'}]: ${code}`);
-                await FB.updateLeaderboard(this.app.user.id, (user.totalLinksWeekly || 0) + 1);
+                await FB.updateLeaderboard(this.app.user.id, 1);
                 this.app.toast(`+${reward} 🪙!`, 'success');
                 this.app.refreshUserBar();
                 document.getElementById('codeInput').value = '';
@@ -1932,4 +1932,4 @@ class CayXumMo {
         popup.classList.add('show');
     }
 }
-window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });
+window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });XumMo(); window.app.init(); });
