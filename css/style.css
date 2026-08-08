@@ -383,3 +383,92 @@ body {
 }
 .notify-item { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 13px; }
 .notify-item .time { font-size: 10px; color: var(--text2); }
+/* ==================== THÊM MỚI: LOGIN SCREEN CHO WEB ==================== */
+.login-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    background: radial-gradient(ellipse at bottom, #1b2735 0%, #090a0f 100%);
+}
+
+.login-box {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 30px 25px;
+    width: 90%;
+    max-width: 380px;
+    text-align: center;
+    backdrop-filter: blur(5px);
+}
+
+.login-box h2 {
+    font-size: 24px;
+    color: var(--text);
+    text-shadow: 0 0 10px rgba(255,255,255,0.5);
+    margin-bottom: 5px;
+}
+
+.login-box .input {
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 14px;
+    margin-bottom: 10px;
+    outline: none;
+}
+
+.login-box .input:focus {
+    border-color: var(--accent);
+}
+
+.login-box .input::placeholder {
+    color: rgba(255,255,255,0.4);
+}
+
+.login-box .btn {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 5px;
+    background: transparent;
+    color: var(--text);
+    transition: 0.3s;
+}
+
+.login-box .btn-gold {
+    border-color: var(--gold);
+    color: var(--gold);
+}
+
+.login-box .btn-success {
+    border-color: #2ed573;
+    color: #2ed573;
+}
+
+.login-box .btn:hover {
+    opacity: 0.8;
+}
+
+.login-box a {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 13px;
+}
+
+.login-box a:hover {
+    text-decoration: underline;
+}
