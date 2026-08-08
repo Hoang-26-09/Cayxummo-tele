@@ -19,16 +19,7 @@ const DEFAULT_CONFIG = {
     bgColor1: '#1b2735',
     bgColor2: '#090a0f',
     codeResetDays: 30,
-    linkTypes: {
-        link4m: {
-            name: "Link4m",
-            maxPerDay: 2,
-            icon: "🔗",
-            color: "#5f91ff",
-            url: "https://link4m.com/st?api=xxx&url={code}",
-            active: true,
-            reward: 100
-        }
+    linkTypes: { 
     }
 };
 
