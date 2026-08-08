@@ -19,8 +19,6 @@ const DEFAULT_CONFIG = {
     bgColor1: '#1b2735',
     bgColor2: '#090a0f',
     codeResetDays: 30,
-    linkTypes: { 
-    }
 };
 
 let CONFIG = { ...DEFAULT_CONFIG };
@@ -1109,9 +1107,18 @@ else if (tab === 'linktypes') {
     const linkTypes = CONFIG.linkTypes || {}; let listHTML = '';
     for (let [id, cfg] of Object.entries(linkTypes)) {
         const stats = await FB.getCodePoolStats(id);
-        listHTML += `<div style="padding:12px;background:rgba(255,255,255,0.05);border-radius:8px;margin-bottom:10px;border-left:4px solid ${cfg.color||'#5f91ff'};"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><span style="font-size:18px;">${cfg.icon||'🔗'}</span><b style="margin-left:6px;">${cfg.name}</b><span style="font-size:12px;color:var(--text2);margin-left:8px;">ID: ${id}</span><span style="margin-left:8px;padding:2px 8px;border-radius:10px;font-size:11px;background:${cfg.active?'rgba(46,213,115,0.2)':'rgba(255,71,87,0.2)'};color:${cfg.active?'#2ed573':'#ff4757'};">${cfg.active?'🟢 Hoạt động':'🔴 Tắt'}</span></div><div style="display:flex;gap:6px;"><button class="btn-sm btn-warning toggle-linktype" data-id="${id}" data-active="${cfg.active}">${cfg.active?'⛔ Tắt':'✅ Bật'}</button><button class="btn-sm btn-danger delete-linktype" data-id="${id}" data-name="${cfg.name}">🗑️ Xóa</button></div></div><div style="margin-top:6px;font-size:12px;color:var(--text2);">🔄 ${cfg.maxPerDay||1} lượt/ngày | 🪙 +${cfg.reward||100} | 📊 Mã: <span style="color:#2ed573;">${stats.available} còn</span> / <span style="color:#ff4757;">${stats.used} đã dùng</span> / ${stats.total} tổng</div><div style="font-size:11px;color:var(--text2);margin-top:4px;">🔗 URL: ${cfg.url||'Chưa cấu hình'}</div></div>`;
+        listHTML += `<div style="padding:12px;background:rgba(255,255,255,0.05);border-radius:8px;margin-bottom:10px;border-left:4px solid ${cfg.color||'#5f91ff'};"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><span style="font-size:18px;">${cfg.icon||'🔗'}</span><b style="margin-left:6px;">${cfg.name}</b><span style="font-size:12px;color:var(--text2);margin-left:8px;">ID: ${id}</span><span style="margin-left:8px;padding:2px 8px;border-radius:10px;font-size:11px;background:${cfg.active?'rgba(46,213,115,0.2)':'rgba(255,71,87,0.2)'};color:${cfg.active?'#2ed573':'#ff4757'};">${cfg.active?'🟢 Hoạt động':'🔴 Tắt'}</span></div><div style="display:flex;gap:6px;"><button class="btn-sm btn-primary edit-linktype" data-id="${id}">✏️ Sửa</button><button class="btn-sm btn-warning toggle-linktype" data-id="${id}" data-active="${cfg.active}">${cfg.active?'⛔ Tắt':'✅ Bật'}</button><button class="btn-sm btn-danger delete-linktype" data-id="${id}" data-name="${cfg.name}">🗑️ Xóa</button></div></div><div style="margin-top:6px;font-size:12px;color:var(--text2);">🔄 ${cfg.maxPerDay||1} lượt/ngày | 🪙 +${cfg.reward||100} | 📊 Mã: <span style="color:#2ed573;">${stats.available} còn</span> / <span style="color:#ff4757;">${stats.used} đã dùng</span> / ${stats.total} tổng</div><div style="font-size:11px;color:var(--text2);margin-top:4px;">🔗 URL: ${cfg.url||'Chưa cấu hình'}</div></div>`;
     }
-    content.innerHTML = `<div class="card"><div class="card-title">📋 Danh sách loại link</div>${listHTML||'<p>Chưa có loại link nào</p>'}</div><div class="card"><div class="card-title">➕ Thêm loại link mới</div><label>Tên:</label><input class="input" id="newLinkName" placeholder="VD: Link5m"><label>ID (tự động):</label><input class="input" id="newLinkId" readonly style="background:rgba(255,255,255,0.05);"><label>Lượt/ngày:</label><input class="input" id="newLinkMax" type="number" value="3"><label>🪙 Thưởng:</label><input class="input" id="newLinkReward" type="number" value="100"><div style="display:flex;gap:10px;"><div style="flex:1;"><label>Icon:</label><input class="input" id="newLinkIcon" value="🔗"></div><div style="flex:1;"><label>Màu:</label><div style="display:flex;gap:6px;"><input type="color" id="newLinkColorPicker" value="#ff00ff" style="width:40px;height:40px;"><input class="input" id="newLinkColor" value="#ff00ff"></div></div></div><label>URL ({code} = mã):</label><input class="input" id="newLinkUrl" placeholder="https://...?url={code}"><label>Trạng thái:</label><select class="input" id="newLinkActive"><option value="true">🟢 Hoạt động</option><option value="false">🔴 Tắt</option></select><button class="btn btn-success" id="addLinkType">➕ THÊM LOẠI</button></div>`;
+    content.innerHTML = `<div class="card"><div class="card-title">📋 Danh sách loại link</div>${listHTML||'<p>Chưa có loại link nào</p>'}</div>
+    <div class="card"><div class="card-title">➕ Thêm loại link mới</div>
+    <label>Tên:</label><input class="input" id="newLinkName" placeholder="VD: Link5m">
+    <label>ID (tự động):</label><input class="input" id="newLinkId" readonly style="background:rgba(255,255,255,0.05);">
+    <label>Lượt/ngày:</label><input class="input" id="newLinkMax" type="number" value="3">
+    <label>🪙 Thưởng:</label><input class="input" id="newLinkReward" type="number" value="100">
+    <div style="display:flex;gap:10px;"><div style="flex:1;"><label>Icon:</label><input class="input" id="newLinkIcon" value="🔗"></div><div style="flex:1;"><label>Màu:</label><div style="display:flex;gap:6px;"><input type="color" id="newLinkColorPicker" value="#ff00ff" style="width:40px;height:40px;"><input class="input" id="newLinkColor" value="#ff00ff"></div></div></div>
+    <label>URL ({code} = mã):</label><input class="input" id="newLinkUrl" placeholder="https://...?url={code}">
+    <label>Trạng thái:</label><select class="input" id="newLinkActive"><option value="true">🟢 Hoạt động</option><option value="false">🔴 Tắt</option></select>
+    <button class="btn btn-success" id="addLinkType">➕ THÊM LOẠI</button></div>`;
     
     document.getElementById('newLinkName').addEventListener('input', function() { document.getElementById('newLinkId').value = this.value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,''); });
     document.getElementById('newLinkColorPicker').addEventListener('input', function() { document.getElementById('newLinkColor').value = this.value; });
@@ -1130,15 +1137,47 @@ else if (tab === 'linktypes') {
         finally { btn.disabled = false; btn.textContent = '➕ THÊM LOẠI'; }
     };
     
+    // Toggle
     this.container.querySelectorAll('.toggle-linktype').forEach(btn => btn.onclick = async () => {
         const id = btn.dataset.id; const ca = btn.dataset.active === 'true';
         try { const ut = { ...CONFIG.linkTypes }; if (ut[id]) ut[id].active = !ca; await FB.db.ref('admin_config/linkTypes').set(ut); await FB.loadConfig(); this.app.toast(`Đã ${!ca?'bật':'tắt'}!`, 'success'); this.loadTab('linktypes'); }
         catch (e) { this.app.toast('Có lỗi!', 'error'); }
     });
+    
+    // Delete
     this.container.querySelectorAll('.delete-linktype').forEach(btn => btn.onclick = async () => {
         if (!confirm(`Xóa "${btn.dataset.name}"?`)) return;
         try { const ut = { ...CONFIG.linkTypes }; delete ut[btn.dataset.id]; await FB.db.ref('admin_config/linkTypes').set(ut); await FB.loadConfig(); this.app.toast('Đã xóa!', 'success'); this.loadTab('linktypes'); }
         catch (e) { this.app.toast('Có lỗi!', 'error'); }
+    });
+    
+    // EDIT - THÊM MỚI
+    this.container.querySelectorAll('.edit-linktype').forEach(btn => btn.onclick = () => {
+        const id = btn.dataset.id; const cfg = CONFIG.linkTypes[id]; if (!cfg) return;
+        content.innerHTML = `<div class="card"><div class="card-title">✏️ Sửa: ${cfg.name}</div>
+        <label>Tên:</label><input class="input" id="editLinkName" value="${cfg.name}">
+        <label>ID: <b>${id}</b> (không đổi)</label>
+        <label>Lượt/ngày:</label><input class="input" id="editLinkMax" type="number" value="${cfg.maxPerDay||3}">
+        <label>🪙 Thưởng:</label><input class="input" id="editLinkReward" type="number" value="${cfg.reward||100}">
+        <label>Icon:</label><input class="input" id="editLinkIcon" value="${cfg.icon||'🔗'}">
+        <label>Màu:</label><div style="display:flex;gap:6px;"><input type="color" id="editLinkColorPicker" value="${cfg.color||'#ff00ff'}" style="width:40px;height:40px;"><input class="input" id="editLinkColor" value="${cfg.color||'#ff00ff'}"></div>
+        <label>URL:</label><input class="input" id="editLinkUrl" value="${cfg.url||''}">
+        <div style="display:flex;gap:10px;margin-top:15px;"><button class="btn btn-primary" id="saveEditLinkType">💾 Lưu</button><button class="btn btn-warning" id="cancelEditLinkType">↩️ Quay lại</button></div></div>`;
+        const picker = document.getElementById('editLinkColorPicker'), input = document.getElementById('editLinkColor');
+        picker.addEventListener('input', () => input.value = picker.value);
+        input.addEventListener('input', () => { if (/^#[0-9A-Fa-f]{6}$/.test(input.value)) picker.value = input.value; });
+        document.getElementById('cancelEditLinkType').onclick = () => this.loadTab('linktypes');
+        document.getElementById('saveEditLinkType').onclick = async () => {
+            const name = document.getElementById('editLinkName').value.trim();
+            const maxPerDay = parseInt(document.getElementById('editLinkMax').value) || 3;
+            const reward = parseInt(document.getElementById('editLinkReward').value) || 100;
+            const icon = document.getElementById('editLinkIcon').value.trim() || '🔗';
+            const color = document.getElementById('editLinkColor').value.trim() || '#ff00ff';
+            const url = document.getElementById('editLinkUrl').value.trim();
+            if (!name || !url) return this.app.toast('Nhập đủ!', 'warning');
+            try { const ut = { ...CONFIG.linkTypes }; ut[id] = { name, maxPerDay, reward, icon, color, url, active: ut[id]?.active !== false }; await FB.db.ref('admin_config/linkTypes').set(ut); await FB.loadConfig(); this.app.toast('Đã cập nhật!', 'success'); this.loadTab('linktypes'); }
+            catch (e) { this.app.toast('Có lỗi!', 'error'); }
+        };
     });
 }
         // ===== CÁC TAB CŨ GIỮ NGUYÊN =====
