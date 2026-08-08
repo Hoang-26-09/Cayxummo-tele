@@ -540,102 +540,131 @@ class HomePage {
         }
     }
 }
-
 class TasksPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
+
     async render() {
         const completedLinks = this.userData.completedLinks || 0;
         const progress = completedLinks % CONFIG.linksForChest;
         const isReady = completedLinks >= CONFIG.linksForChest && progress === 0;
+        const activeLinkTypes = Object.entries(CONFIG.linkTypes || {}).filter(([id, cfg]) => cfg.active);
         const cooldown = this.userData.lastCodeTime ? Math.max(0, CONFIG.linkCooldown - (Date.now() - this.userData.lastCodeTime)) : 0;
         const isCooldown = cooldown > 0;
-        this.container.innerHTML = `
-            <div class="card">
-                <div class="card-title">📋 Nhiệm vụ</div>
-                <div style="text-align:center;margin:20px 0;">
-                    <button class="btn btn-gold get-link-btn" style="padding:20px 40px;font-size:18px;border-radius:16px;margin:0 auto;display:inline-flex;align-items:center;gap:10px;" ${isCooldown ? 'disabled' : ''}>
-                        <span style="font-size:30px;">🔗</span> <span>${isCooldown ? `⏳ Đợi ${Math.ceil(cooldown/60000)}p` : 'LẤY LINK'}</span>
-                    </button>
-                </div>
-                <div style="margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1);">
-                    <p style="font-weight:bold;">🔑 Nhập mã xác nhận:</p>
-                    <input class="input" id="codeInput" placeholder="Nhập mã...">
-                    <button class="btn btn-success" id="btnVerify">✅ Xác nhận</button>
-                    ${isCooldown ? `<p style="font-size:12px;color:var(--text2);text-align:center;margin-top:8px;">⏱️ Đợi ${Math.ceil(cooldown/60000)} phút để làm nhiệm vụ tiếp</p>` : ''}
-                </div>
-            </div>
-            <div class="card">
-                <div class="card-title">🎁 Rương thưởng</div>
-                <div class="progress-bar"><div class="progress-fill" style="width:${(isReady ? CONFIG.linksForChest : progress) / CONFIG.linksForChest * 100}%"></div></div>
-                <p style="text-align:center;">${isReady ? CONFIG.linksForChest : progress}/${CONFIG.linksForChest}</p>
-                <button class="btn btn-gold" id="btnChest" ${isReady ? '' : 'disabled'}>🎁 Mở rương</button>
-            </div>
-        `;
-        const goBtn = this.container.querySelector('.get-link-btn');
-        if (goBtn && !isCooldown) {
-            goBtn.onclick = async () => {
-                goBtn.disabled = true;
-                goBtn.innerHTML = '<span style="font-size:30px;">⏳</span> <span>Đang tải...</span>';
-                try {
-                    const task = await FB.getRandomTask(this.app.user.id);
-                    if (task) {
-                        if (this.app.tg) {
-                            this.app.tg.openLink(task.link);
-                        } else {
-                            window.open(task.link, '_blank');
-                        }
-                        this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
-                    } else {
-                        this.app.toast('Hết link! Admin đang thêm link mới...', 'warning');
-                    }
-                } catch (error) {
-                    this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
-                } finally {
-                    goBtn.innerHTML = '<span style="font-size:30px;">🔗</span> <span>LẤY LINK</span>';
-                    goBtn.disabled = false;
-                }
-            };
+        let linkTypeCardsHTML = '';
+
+        for (let [typeId, typeCfg] of activeLinkTypes) {
+            const dailyCountKey = `linkDaily_${typeId}`;
+            const dailyCountDateKey = `linkDailyDate_${typeId}`;
+            const today = new Date().toDateString();
+            const countToday = (this.userData[dailyCountDateKey] === today) ? (this.userData[dailyCountKey] || 0) : 0;
+            const maxPerDay = typeCfg.maxPerDay || 1;
+            const isFull = countToday >= maxPerDay;
+            linkTypeCardsHTML += `
+                <div class="link-type-card" style="border-left: 4px solid ${typeCfg.color}; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 12px; margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <div><span style="font-size: 20px;">${typeCfg.icon || '🔗'}</span><span style="font-weight: bold; margin-left: 8px;">${typeCfg.name}</span><span style="font-size: 12px; color: var(--text2); margin-left: 8px;">(${countToday}/${maxPerDay} hôm nay)</span></div>
+                        <span style="font-size: 12px; padding: 4px 10px; border-radius: 20px; background: ${isFull ? 'rgba(255,71,87,0.2)' : 'rgba(46,213,115,0.2)'}; color: ${isFull ? '#ff4757' : '#2ed573'};">
+                            ${isFull ? '⛔ Hết lượt' : `✅ Còn ${maxPerDay - countToday} lượt`}
+                        </span>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn btn-primary get-link-btn" data-type="${typeId}" style="flex: 1;" ${isFull || isCooldown ? 'disabled' : ''}>
+                            ${isFull ? '⛔ ĐÃ HẾT LƯỢT' : isCooldown ? `⏳ Đợi ${Math.ceil(cooldown/60000)}p` : '🔗 LẤY LINK'}
+                        </button>
+                        <span style="font-size: 12px; color: var(--text2);">🪙 +${typeCfg.reward || 100}</span>
+                    </div>
+                </div>`;
         }
+        if (linkTypeCardsHTML === '') linkTypeCardsHTML = '<p style="text-align: center; color: var(--text2); padding: 30px;">⚠️ Chưa có loại link nào được kích hoạt.</p>';
+
+        this.container.innerHTML = `
+            <div class="card"><div class="card-title">📋 Nhiệm vụ</div><p style="font-size:12px;color:var(--text2);margin-bottom:10px;">Mỗi loại link có giới hạn lượt/ngày riêng.</p>${linkTypeCardsHTML}</div>
+            <div class="card">
+                <div class="card-title">🔑 Nhập mã xác nhận</div>
+                <input class="input" id="codeInput" placeholder="Nhập mã...">
+                <button class="btn btn-success" id="btnVerify">✅ Xác nhận</button>
+                ${isCooldown ? `<p style="font-size:12px;color:var(--text2);text-align:center;margin-top:8px;">⏱️ Đợi ${Math.ceil(cooldown/60000)} phút để làm nhiệm vụ tiếp</p>` : ''}
+            </div>
+            <div class="card"><div class="card-title">🎁 Rương thưởng</div><div class="progress-bar"><div class="progress-fill" style="width:${(isReady ? CONFIG.linksForChest : progress) / CONFIG.linksForChest * 100}%"></div></div><p style="text-align:center;">${isReady ? CONFIG.linksForChest : progress}/${CONFIG.linksForChest}</p><button class="btn btn-gold" id="btnChest" ${isReady ? '' : 'disabled'}>🎁 Mở rương</button></div>
+        `;
+
+        this.container.querySelectorAll('.get-link-btn').forEach(btn => {
+            btn.onclick = async () => {
+                const typeId = btn.dataset.type;
+                const typeCfg = CONFIG.linkTypes[typeId];
+                btn.disabled = true;
+                const orig = btn.innerHTML;
+                btn.innerHTML = '⏳...';
+                try {
+                    const code = await FB.getCodeFromPool(typeId);
+                    if (!code) { this.app.toast(`Hết mã cho ${typeCfg.name}!`, 'warning'); btn.innerHTML = orig; btn.disabled = false; return; }
+                    const user = await FB.getUser(this.app.user.id);
+                    const today = new Date().toDateString();
+                    const dck = `linkDaily_${typeId}`;
+                    const dcdk = `linkDailyDate_${typeId}`;
+                    const ct = (user[dcdk] === today) ? (user[dck] || 0) : 0;
+                    if (ct >= typeCfg.maxPerDay) { this.app.toast(`Hết lượt ${typeCfg.name}!`, 'warning'); btn.innerHTML = orig; btn.disabled = false; return; }
+                    let finalUrl = typeCfg.url.replace('{code}', code);
+                    await FB.updateUser(this.app.user.id, { lastLinkTime: Date.now(), currentTaskCode: code, currentTaskType: typeId });
+                    if (this.app.tg) this.app.tg.openLink(finalUrl);
+                    else window.open(finalUrl, '_blank');
+                    this.app.toast('Đã mở link! Tìm mã và nhập vào bên dưới.', 'info');
+                } catch (e) { this.app.toast('Có lỗi!', 'error'); }
+                finally { btn.innerHTML = orig; btn.disabled = false; }
+            };
+        });
+
         this.container.querySelector('#btnVerify').onclick = async () => {
-            const code = this.container.querySelector('#codeInput').value.trim(); if (!code) return this.app.toast('Nhập mã!', 'warning');
+            const code = this.container.querySelector('#codeInput').value.trim();
+            if (!code) return this.app.toast('Nhập mã!', 'warning');
             const btn = this.container.querySelector('#btnVerify');
-            const originalText = btn.textContent;
-            btn.textContent = '⏳ Đang xử lý...';
-            btn.disabled = true;
+            const orig = btn.textContent; btn.textContent = '⏳...'; btn.disabled = true;
             try {
-                const result = await FB.verifyCode(this.app.user.id, code);
-                if (result.status === 'ok') {
-                    this.app.toast(`+${result.reward} 🪙!${result.warning ? ' ⚠️ ' + result.warning : ''}`, result.warning ? 'warning' : 'success');
-                    this.app.refreshUserBar();
-                    this.render();
-                } else if (result.status === 'cooldown') {
-                    this.app.toast(result.message, 'warning');
-                    this.render();
-                } else {
-                    this.app.toast(result.message || 'Mã không đúng!', 'error');
+                const user = await FB.getUser(this.app.user.id);
+                if (!user.currentTaskCode || !user.currentTaskType) { this.app.toast('Nhấn LẤY LINK trước!', 'warning'); btn.textContent = orig; btn.disabled = false; return; }
+                if (user.currentTaskCode !== code) { this.app.toast('Mã không đúng!', 'error'); btn.textContent = orig; btn.disabled = false; return; }
+                if (user.lastCodeTime && Date.now() - user.lastCodeTime < CONFIG.linkCooldown) {
+                    const left = Math.ceil((CONFIG.linkCooldown - (Date.now() - user.lastCodeTime)) / 60000);
+                    this.app.toast(`Đợi ${left} phút!`, 'warning'); btn.textContent = orig; btn.disabled = false; return;
                 }
-            } catch (error) {
-                this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
-            } finally {
-                btn.textContent = originalText;
-                btn.disabled = false;
-            }
+                const today = new Date().toDateString();
+                const ltId = user.currentTaskType;
+                const ltCfg = CONFIG.linkTypes[ltId];
+                const reward = ltCfg?.reward || 100;
+                const dck = `linkDaily_${ltId}`;
+                const dcdk = `linkDailyDate_${ltId}`;
+                const ct = (user[dcdk] === today) ? (user[dck] || 0) : 0;
+                await FB.updateUser(this.app.user.id, {
+                    balance: (user.balance || 0) + reward,
+                    completedLinks: (user.completedLinks || 0) + 1,
+                    totalLinksWeekly: (user.totalLinksWeekly || 0) + 1,
+                    totalLinksAllTime: (user.totalLinksAllTime || 0) + 1,
+                    lastCodeTime: Date.now(),
+                    codesUsed: [...(user.codesUsed || []), code],
+                    [dck]: ct + 1,
+                    [dcdk]: today,
+                    currentTaskCode: null,
+                    currentTaskType: null
+                });
+                await FB.addTransactionHistory(this.app.user.id, 'task', reward, `Vượt link [${ltCfg?.name || 'Mặc định'}]: ${code}`);
+                await FB.updateLeaderboard(this.app.user.id, (user.totalLinksWeekly || 0) + 1);
+                this.app.toast(`+${reward} 🪙!`, 'success');
+                this.app.refreshUserBar();
+                document.getElementById('codeInput').value = '';
+                this.render();
+            } catch (e) { this.app.toast('Có lỗi!', 'error'); }
+            finally { btn.textContent = orig; btn.disabled = false; }
         };
-        this.container.querySelector('#btnChest').onclick = async () => { 
+
+        this.container.querySelector('#btnChest').onclick = async () => {
             const btn = this.container.querySelector('#btnChest');
-            const originalText = btn.textContent;
-            btn.textContent = '⏳ Đang mở...';
-            btn.disabled = true;
+            const orig = btn.textContent; btn.textContent = '⏳...'; btn.disabled = true;
             try {
-                const res = await FB.openChest(this.app.user.id); 
-                if (res.status === 'ok') { this.app.toast(`Nhận ${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); this.render(); } 
+                const res = await FB.openChest(this.app.user.id);
+                if (res.status === 'ok') { this.app.toast(`Nhận ${res.reward} 🪙!`, 'success'); this.app.refreshUserBar(); this.render(); }
                 else this.app.toast(res.message, 'error');
-            } catch (error) {
-                this.app.toast('Có lỗi xảy ra, vui lòng thử lại!', 'error');
-            } finally {
-                btn.textContent = originalText;
-                btn.disabled = false;
-            }
+            } catch (e) { this.app.toast('Có lỗi!', 'error'); }
+            finally { btn.textContent = orig; btn.disabled = false; }
         };
     }
 }
