@@ -541,24 +541,55 @@ class TasksPage {
         const isCooldown = cooldown > 0;
         let linkTypeCardsHTML = '';
 
+        // ===== Hàm kiểm tra khóa đến 3h sáng =====
+        const isLockedUntil3AM = (dailyCountDateKey, dailyCountKey, maxPerDay) => {
+            const today = new Date().toDateString();
+            const now = new Date();
+            const threeAM = new Date();
+            threeAM.setHours(3, 0, 0, 0);
+            
+            // Nếu đã qua 3h sáng mà chưa reset → mở khóa
+            if (now >= threeAM && this.userData[dailyCountDateKey] !== today) {
+                return false; // Mở khóa
+            }
+            
+            // Nếu hôm nay đã đủ lượt → khóa
+            const countToday = (this.userData[dailyCountDateKey] === today) ? (this.userData[dailyCountKey] || 0) : 0;
+            if (countToday >= maxPerDay) {
+                // Nếu đã qua 3h sáng hôm nay → vẫn khóa đến mai 3h
+                if (now >= threeAM) {
+                    const tomorrow3AM = new Date();
+                    tomorrow3AM.setDate(tomorrow3AM.getDate() + 1);
+                    tomorrow3AM.setHours(3, 0, 0, 0);
+                    const timeLeft = Math.ceil((tomorrow3AM - now) / 3600000);
+                    return { locked: true, timeLeft: timeLeft };
+                }
+                return { locked: true, timeLeft: Math.ceil((threeAM - now) / 3600000) + 24 };
+            }
+            return false;
+        };
+
         for (let [typeId, typeCfg] of activeLinkTypes) {
             const dailyCountKey = `linkDaily_${typeId}`;
             const dailyCountDateKey = `linkDailyDate_${typeId}`;
             const today = new Date().toDateString();
             const countToday = (this.userData[dailyCountDateKey] === today) ? (this.userData[dailyCountKey] || 0) : 0;
             const maxPerDay = typeCfg.maxPerDay || 1;
+            const lockStatus = isLockedUntil3AM(dailyCountDateKey, dailyCountKey, maxPerDay);
+            const isLocked = lockStatus.locked || false;
             const isFull = countToday >= maxPerDay;
+            
             linkTypeCardsHTML += `
-                <div class="link-type-card" style="border-left: 4px solid ${typeCfg.color}; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 12px; margin-bottom: 15px;">
+                <div class="link-type-card" style="border-left: 4px solid ${typeCfg.color}; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 12px; margin-bottom: 15px; ${isLocked ? 'opacity: 0.6;' : ''}">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                         <div><span style="font-size: 20px;">${typeCfg.icon || '🔗'}</span><span style="font-weight: bold; margin-left: 8px;">${typeCfg.name}</span><span style="font-size: 12px; color: var(--text2); margin-left: 8px;">(${countToday}/${maxPerDay} hôm nay)</span></div>
-                        <span style="font-size: 12px; padding: 4px 10px; border-radius: 20px; background: ${isFull ? 'rgba(255,71,87,0.2)' : 'rgba(46,213,115,0.2)'}; color: ${isFull ? '#ff4757' : '#2ed573'};">
-                            ${isFull ? '⛔ Hết lượt' : `✅ Còn ${maxPerDay - countToday} lượt`}
+                        <span style="font-size: 12px; padding: 4px 10px; border-radius: 20px; background: ${isLocked ? 'rgba(255,165,0,0.2)' : isFull ? 'rgba(255,71,87,0.2)' : 'rgba(46,213,115,0.2)'}; color: ${isLocked ? '#ffa500' : isFull ? '#ff4757' : '#2ed573'};">
+                            ${isLocked ? `🔒 Mở lúc 3h sáng` : isFull ? '⛔ Hết lượt' : `✅ Còn ${maxPerDay - countToday} lượt`}
                         </span>
                     </div>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <button class="btn btn-primary get-link-btn" data-type="${typeId}" style="flex: 1;" ${isFull || isCooldown ? 'disabled' : ''}>
-                            ${isFull ? '⛔ ĐÃ HẾT LƯỢT' : isCooldown ? `⏳ Đợi ${Math.ceil(cooldown/60000)}p` : '🔗 LẤY LINK'}
+                        <button class="btn btn-primary get-link-btn" data-type="${typeId}" style="flex: 1;" ${isFull || isCooldown || isLocked ? 'disabled' : ''}>
+                            ${isLocked ? '🔒 KHÓA ĐẾN 3H SÁNG' : isFull ? '⛔ ĐÃ HẾT LƯỢT' : isCooldown ? `⏳ Đợi ${Math.ceil(cooldown/60000)}p` : '🔗 LẤY LINK'}
                         </button>
                         <span style="font-size: 12px; color: var(--text2);">🪙 +${typeCfg.reward || 100}</span>
                     </div>
@@ -567,7 +598,7 @@ class TasksPage {
         if (linkTypeCardsHTML === '') linkTypeCardsHTML = '<p style="text-align: center; color: var(--text2); padding: 30px;">⚠️ Chưa có loại link nào được kích hoạt.</p>';
 
         this.container.innerHTML = `
-            <div class="card"><div class="card-title">📋 Nhiệm vụ</div><p style="font-size:12px;color:var(--text2);margin-bottom:10px;">Mỗi loại link có giới hạn lượt/ngày riêng.</p>${linkTypeCardsHTML}</div>
+            <div class="card"><div class="card-title">📋 Nhiệm vụ</div><p style="font-size:12px;color:var(--text2);margin-bottom:10px;">Mỗi loại link có giới hạn lượt/ngày. Hết lượt sẽ khóa đến 3h sáng hôm sau.</p>${linkTypeCardsHTML}</div>
             <div class="card">
                 <div class="card-title">🔑 Nhập mã xác nhận</div>
                 <input class="input" id="codeInput" placeholder="Nhập mã...">
@@ -1076,9 +1107,21 @@ if (tab === 'codestats') {
     for (let [typeId, typeCfg] of Object.entries(linkTypes)) {
         const stats = await FB.getCodePoolStats(typeId);
         const ap = stats.total > 0 ? Math.round(stats.available / stats.total * 100) : 0;
-        statsHTML += `<div class="card" style="border-left:4px solid ${typeCfg.color};"><div class="card-title">${typeCfg.icon||'🔗'} ${typeCfg.name} (${typeId})</div><div style="display:flex;gap:15px;flex-wrap:wrap;"><div style="flex:1;background:rgba(46,213,115,0.1);padding:10px;border-radius:8px;text-align:center;"><div style="font-size:24px;color:#2ed573;">${stats.available}</div><div style="font-size:11px;">✅ Còn lại</div></div><div style="flex:1;background:rgba(255,71,87,0.1);padding:10px;border-radius:8px;text-align:center;"><div style="font-size:24px;color:#ff4757;">${stats.used}</div><div style="font-size:11px;">❌ Đã dùng</div></div><div style="flex:1;background:rgba(255,215,0,0.1);padding:10px;border-radius:8px;text-align:center;"><div style="font-size:24px;color:#ffd700;">${stats.total}</div><div style="font-size:11px;">📋 Tổng</div></div>${stats.expired>0?`<div style="flex:1;background:rgba(95,145,255,0.1);padding:10px;border-radius:8px;text-align:center;"><div style="font-size:24px;color:#5f91ff;">${stats.expired}</div><div style="font-size:11px;">🔄 Đã reset</div></div>`:''}</div><div style="background:rgba(255,255,255,0.05);border-radius:8px;height:8px;overflow:hidden;margin:10px 0;"><div style="height:100%;background:linear-gradient(90deg,#2ed573 ${ap}%,#ff4757 ${ap}%);width:100%;"></div></div></div>`;
+        statsHTML += `<div class="card" style="border-left:4px solid ${typeCfg.color};"><div class="card-title">${typeCfg.icon||'🔗'} ${typeCfg.name} (${typeId})</div>
+        <div style="display:flex;gap:15px;flex-wrap:wrap;margin-bottom:10px;">
+            <div style="flex:1;background:rgba(46,213,115,0.1);padding:10px;border-radius:8px;text-align:center;"><div style="font-size:24px;color:#2ed573;">${stats.available}</div><div style="font-size:11px;">✅ Còn lại</div></div>
+            <div style="flex:1;background:rgba(255,71,87,0.1);padding:10px;border-radius:8px;text-align:center;"><div style="font-size:24px;color:#ff4757;">${stats.used}</div><div style="font-size:11px;">❌ Đã dùng</div></div>
+            <div style="flex:1;background:rgba(255,215,0,0.1);padding:10px;border-radius:8px;text-align:center;"><div style="font-size:24px;color:#ffd700;">${stats.total}</div><div style="font-size:11px;">📋 Tổng</div></div>
+            ${stats.expired>0?`<div style="flex:1;background:rgba(95,145,255,0.1);padding:10px;border-radius:8px;text-align:center;"><div style="font-size:24px;color:#5f91ff;">${stats.expired}</div><div style="font-size:11px;">🔄 Đã reset</div></div>`:''}
+        </div>
+        <div style="background:rgba(255,255,255,0.05);border-radius:8px;height:8px;overflow:hidden;margin-bottom:5px;"><div style="height:100%;background:linear-gradient(90deg,#2ed573 ${ap}%,#ff4757 ${ap}%);width:100%;"></div></div>
+        <details style="margin-top:10px;"><summary style="cursor:pointer;color:var(--accent);font-size:13px;">📋 Xem danh sách mã (${stats.codes.length} mã)</summary>
+        <div style="max-height:300px;overflow-y:auto;margin-top:10px;">
+        <table style="width:100%;font-size:11px;border-collapse:collapse;">
+        <thead><tr style="background:rgba(255,255,255,0.05);"><th style="padding:6px;text-align:left;">Mã</th><th style="padding:6px;text-align:center;">Trạng thái</th><th style="padding:6px;text-align:center;">Số lần dùng</th><th style="padding:6px;text-align:right;">Dùng lúc</th></tr></thead>
+        <tbody>${stats.codes.map(c => `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:6px;font-family:monospace;">${c.code}</td><td style="padding:6px;text-align:center;"><span style="padding:2px 6px;border-radius:10px;font-size:10px;background:${c.available?'rgba(46,213,115,0.2)':'rgba(255,71,87,0.2)'};color:${c.available?'#2ed573':'#ff4757'};">${c.expired?'🔄 Reset':c.available?'✅ Sẵn sàng':'❌ Đã dùng'}</span></td><td style="padding:6px;text-align:center;">${c.usedCount}</td><td style="padding:6px;text-align:right;font-size:10px;color:var(--text2);">${c.usedAt?new Date(c.usedAt).toLocaleString('vi-VN'):'-'}</td></tr>`).join('')}</tbody></table></div></details></div>`;
     }
-    content.innerHTML = `<h3>📊 Thống kê mã</h3><p style="font-size:12px;color:var(--text2);">⏰ Reset sau ${CONFIG.codeResetDays} ngày</p>${statsHTML||'<p>Chưa có loại link nào</p>'}`;
+    content.innerHTML = `<h3>📊 Thống kê mã</h3><p style="font-size:12px;color:var(--text2);margin-bottom:10px;">⏰ Reset sau ${CONFIG.codeResetDays} ngày</p>${statsHTML||'<p>Chưa có loại link nào</p>'}`;
 }
 
 else if (tab === 'import') {
