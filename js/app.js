@@ -66,7 +66,7 @@ const Storage = {
 function generateUniqueId() {
     const timestamp = Date.now();
     const random = Math.random().toString(36).substr(2, 8);
-    return 'U_' + timestamp + '_' + random;
+    return 'UidWEB_' + timestamp;
 }
 
 // ==================== MÃ HÓA MẬT KHẨU ====================
@@ -763,7 +763,16 @@ class TasksPage {
 class FriendsPage {
     constructor(app, container, userData) { this.app = app; this.container = container; this.userData = userData; }
     render() {
-        const u = this.userData; const refLink = `https://t.me/${this.app.tg.botUsername || 'cayxummo_bot'}/app?startapp=${u.id}`;
+        const u = this.userData; let refLink;
+if (this.app.tg) {
+    // Nếu đang chạy trong Telegram
+    const botName = this.app.tg.botUsername || 'cayxummo_bot';
+    refLink = `https://t.me/${botName}/app?startapp=${u.id}`;
+} else {
+    // Nếu đang chạy trên Web
+    const baseUrl = window.location.origin + window.location.pathname;
+    refLink = https://cayxummo-tele.vercel.app + '?ref=' + u.id;
+}
         this.container.innerHTML = `
             <div class="card"><div class="card-title">👥 Mời bạn bè</div><p style="font-size:13px;color:var(--text2);">Link mời của bạn:</p><div style="background:rgba(255,255,255,0.05);padding:10px;border-radius:8px;word-break:break-all;margin-bottom:10px;">${refLink}</div><button class="btn btn-primary" id="copyLink">📋 Copy link</button><p style="margin-top:12px;">🎁 Thưởng:<br>2 bạn → +100 🪙<br>5 bạn → +300 🪙<br>10 bạn → +1.000 🪙</p></div>
             <div class="card"><div class="card-title">📊 Bạn đã mời: ${(u.friends||[]).length}</div></div>
@@ -1939,6 +1948,29 @@ class CayXumMo {
         }
         
         this.isAdmin = await FB.isAdmin(this.user.id);
+        // Xử lý link mời (chỉ cho web)
+if (!this.tg) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const refId = urlParams.get('ref');
+    if (refId && refId !== this.user.id) {
+        // Kiểm tra user được mời có tồn tại không
+        const refUser = await FB.getUser(refId);
+        if (refUser) {
+            try {
+                const result = await FB.addFriend(this.user.id, refId);
+                if (result.status === 'ok' || result.status === 'reward') {
+                    this.toast(`🎉 Bạn được mời bởi @${refUser.username || refId}!`, 'success');
+                } else if (result.status === 'already') {
+                    console.log('Đã là bạn bè');
+                }
+            } catch (e) {
+                console.warn('Không thể xử lý lời mời:', e);
+            }
+        } else {
+            console.warn('Người mời không tồn tại:', refId);
+        }
+    }
+}
         
         document.getElementById('loadingScreen').style.display = 'none';
         document.getElementById('app').style.display = 'flex';
