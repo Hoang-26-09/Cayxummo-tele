@@ -399,28 +399,39 @@ async importCodes(linkTypeId, codesArray) {
     }
 
     async updateLeaderboard(uid, links) {
-        const user = await this.getUser(uid);
-        await this.db.ref('leaderboard/' + uid).set({ userId: uid, username: user?.username || 'Unknown', links, updatedAt: Date.now() });
-    }
+    const user = await this.getUser(uid);
+    const ref = this.db.ref('leaderboard/' + uid);
+    await ref.transaction(currentData => {
+        if (currentData === null) {
+            return { userId: uid, username: user?.username || 'Unknown', links: links, updatedAt: Date.now() };
+        }
+        return { 
+            ...currentData, 
+            links: (currentData.links || 0) + links, 
+            username: user?.username || currentData.username, 
+            updatedAt: Date.now() 
+        };
+    });
+}
 
     async getTopLinks(limit = 10) {
-        const snap = await this.db.ref('leaderboard').orderByChild('links').limitToLast(limit).once('value');
-        const arr = []; snap.forEach(c => arr.push({ id: c.key, ...c.val() })); return arr.reverse();
-    }
+    const snap = await this.db.ref('leaderboard').once('value');
+    const arr = []; 
+    snap.forEach(c => arr.push({ id: c.key, ...c.val() })); 
+    arr.sort((a, b) => (b.links || 0) - (a.links || 0));
+    return arr.slice(0, limit);
+}
 
     async getTopFriends(limit = 10) {
-        const snap = await this.db.ref('users').orderByChild('friendsCount').limitToLast(limit).once('value');
-        const arr = []; 
-        snap.forEach(c => { 
-            const u = c.val(); 
-            arr.push({ 
-                userId: c.key, 
-                username: u.username, 
-                friends: (u.friends || []).length 
-            }); 
-        });
-        return arr.reverse();
-    }
+    const snap = await this.db.ref('users').once('value');
+    const arr = []; 
+    snap.forEach(c => { 
+        const u = c.val(); 
+        arr.push({ userId: c.key, username: u.username, friends: (u.friends || []).length }); 
+    });
+    arr.sort((a, b) => b.friends - a.friends);
+    return arr.slice(0, limit);
+}
 
     async getDashboard() {
         const usersSnap = await this.db.ref('users').once('value');
@@ -1921,4 +1932,4 @@ class CayXumMo {
         popup.classList.add('show');
     }
 }
-window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });
+window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });entListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });
