@@ -1932,4 +1932,96 @@ class CayXumMo {
         popup.classList.add('show');
     }
 }
-window.addEventListener('DOMContentLoaded', () => { window.app = new CayXumMo(); window.app.init(); });
+// ===== KHỞI TẠO APP (TELEGRAM + WEB) =====
+window.addEventListener('DOMContentLoaded', () => {
+    window.app = new CayXumMo();
+    
+    // Nếu là Telegram → chạy như cũ
+    if (window.app.tg?.initDataUnsafe?.user) {
+        window.app.init();
+        return;
+    }
+    
+    // Nếu là Web → kiểm tra đã lưu đăng nhập chưa
+    const savedId = localStorage.getItem('cayxummo_uid');
+    if (savedId) {
+        // Đã đăng nhập → vào app luôn
+        window.app.user = { 
+            id: savedId, 
+            username: localStorage.getItem('cayxummo_user') || 'User' 
+        };
+        window.app.init();
+        return;
+    }
+    
+    // Chưa đăng nhập → hiện form login
+    document.getElementById('loadingScreen').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    setupWebLogin();
+});
+
+// ===== HÀM ĐĂNG NHẬP/ĐĂNG KÝ CHO WEB =====
+function setupWebLogin() {
+    // Chuyển đổi form
+    document.getElementById('showRegister').onclick = (e) => {
+        e.preventDefault();
+        document.getElementById('loginForm').style.display = 'none';
+        document.getElementById('registerForm').style.display = 'block';
+    };
+    document.getElementById('showLogin').onclick = (e) => {
+        e.preventDefault();
+        document.getElementById('registerForm').style.display = 'none';
+        document.getElementById('loginForm').style.display = 'block';
+    };
+    
+    // ĐĂNG NHẬP
+    document.getElementById('btnLogin').onclick = async () => {
+        const u = document.getElementById('loginUsername').value.trim();
+        const p = document.getElementById('loginPassword').value.trim();
+        if (!u || !p) return alert('Vui lòng nhập đầy đủ!');
+        
+        const snap = await FB.db.ref('users').once('value');
+        const users = snap.val() || {};
+        for (let id in users) {
+            if (users[id].username === u && users[id].password === p) {
+                localStorage.setItem('cayxummo_uid', id);
+                localStorage.setItem('cayxummo_user', u);
+                window.app.user = { id, username: u };
+                document.getElementById('loginScreen').style.display = 'none';
+                window.app.init();
+                return;
+            }
+        }
+        alert('❌ Sai tên đăng nhập hoặc mật khẩu!');
+    };
+    
+    // ĐĂNG KÝ
+    document.getElementById('btnRegister').onclick = async () => {
+        const u = document.getElementById('regUsername').value.trim();
+        const p = document.getElementById('regPassword').value.trim();
+        if (!u || !p) return alert('Vui lòng nhập đầy đủ!');
+        if (p.length < 4) return alert('Mật khẩu ít nhất 4 ký tự!');
+        
+        const snap = await FB.db.ref('users').once('value');
+        const users = snap.val() || {};
+        for (let id in users) {
+            if (users[id].username === u) return alert('❌ Tên đăng nhập đã tồn tại!');
+        }
+        
+        const uid = 'web_' + Date.now();
+        await FB.db.ref('users/' + uid).set({
+            id: uid, username: u, password: p, balance: 0,
+            dailyStreak: 0, lastDaily: '', completedLinks: 0,
+            totalLinksWeekly: 0, totalLinksAllTime: 0,
+            friends: [], codesUsed: [], giftCodesUsed: [],
+            lastLinkTime: 0, chestsOpened: 0, isBanned: false,
+            createdAt: Date.now(), friendsCount: 0
+        });
+        
+        localStorage.setItem('cayxummo_uid', uid);
+        localStorage.setItem('cayxummo_user', u);
+        window.app.user = { id: uid, username: u };
+        document.getElementById('loginScreen').style.display = 'none';
+        window.app.init();
+    };
+            }
