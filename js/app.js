@@ -284,7 +284,7 @@ async importCodes(linkTypeId, codesArray) {
             codesCountToday: codesToday + 1
         });
         await this.addTransactionHistory(uid, 'task', reward, `Vượt link: ${code}`);
-        await this.updateLeaderboard(uid, (user.totalLinksWeekly || 0) + 1);
+        await this.updateLeaderboard(uid, 1);
 
         if (isTool) {
             return { status: 'ok', reward, warning: 'Cảnh báo: Bạn đã nhập mã quá nhanh!' };
