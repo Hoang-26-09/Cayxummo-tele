@@ -2,6 +2,7 @@ import { FB } from '../firebase-manager.js';
 import { Storage } from '../storage.js';
 import { getDeviceHash, isDeviceAlreadyRegistered } from '../device-fingerprint.js';
 import { withLoading } from '../ui.js';
+import { callApi } from '../api-client.js';
 
 // Map lỗi Cloud Functions/Firebase Auth sang tiếng Việt dễ hiểu
 function friendlyError(e) {
@@ -17,20 +18,18 @@ function friendlyError(e) {
 }
 
 async function loginWithUsername(username, password) {
-    const resolveLoginEmail = firebase.functions().httpsCallable('resolveLoginEmail');
-    const resolved = await resolveLoginEmail({ username });
+    const resolved = await callApi('resolveLoginEmail', { username }, { requireAuth: false });
 
-    if (resolved.data.mode === 'legacy') {
+    if (resolved.mode === 'legacy') {
         // Tài khoản CŨ, chưa nâng cấp -> verify + migrate server-side.
         // Không hỏi email ở đây để không làm rối luồng đăng nhập bình
         // thường; người dùng có thể thêm email khôi phục sau trong
         // Tài khoản > "Thêm email khôi phục".
-        const legacyLogin = firebase.functions().httpsCallable('legacyLogin');
-        const result = await legacyLogin({ username, password });
-        return await firebase.auth().signInWithCustomToken(result.data.customToken);
+        const result = await callApi('legacyLogin', { username, password }, { requireAuth: false });
+        return await firebase.auth().signInWithCustomToken(result.customToken);
     }
 
-    return await firebase.auth().signInWithEmailAndPassword(resolved.data.email, password);
+    return await firebase.auth().signInWithEmailAndPassword(resolved.email, password);
 }
 
 export function setupWebLogin(app) {
@@ -82,15 +81,14 @@ export function setupWebLogin(app) {
             const username = prompt('Nhập tên đăng nhập của bạn:');
             if (!username) return;
             try {
-                const resolveLoginEmail = firebase.functions().httpsCallable('resolveLoginEmail');
-                const resolved = await resolveLoginEmail({ username: username.trim() });
+                const resolved = await callApi('resolveLoginEmail', { username: username.trim() }, { requireAuth: false });
 
-                if (resolved.data.mode === 'legacy' || !resolved.data.hasRealEmail) {
+                if (resolved.mode === 'legacy' || !resolved.hasRealEmail) {
                     alert('⚠️ Tài khoản này chưa có email khôi phục.\n\nHãy đăng nhập bình thường rồi vào "Tài khoản > Thêm email khôi phục" để thiết lập cho lần sau, hoặc liên hệ admin để được hỗ trợ.');
                     return;
                 }
 
-                await firebase.auth().sendPasswordResetEmail(resolved.data.email);
+                await firebase.auth().sendPasswordResetEmail(resolved.email);
                 alert('✅ Đã gửi link đặt lại mật khẩu tới email đã đăng ký!\n\nKiểm tra hộp thư đến (và cả mục Spam/Rác).');
             } catch (err) {
                 alert('❌ ' + friendlyError(err));
@@ -135,8 +133,7 @@ export function setupWebLogin(app) {
                     return;
                 }
 
-                const registerUser = firebase.functions().httpsCallable('registerUser');
-                await registerUser({ username, email, password, deviceHash });
+                await callApi('registerUser', { username, email, password, deviceHash }, { requireAuth: false });
 
                 const cred = await firebase.auth().signInWithEmailAndPassword(email, password);
 

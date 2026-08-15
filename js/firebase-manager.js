@@ -1,5 +1,6 @@
 import { CONFIG, DEFAULT_CONFIG, firebaseConfig } from './config.js';
 import { rateLimiter } from './rate-limiter.js';
+import { callApi } from './api-client.js';
 
 export class FirebaseManager {
     constructor() {
@@ -55,9 +56,7 @@ export class FirebaseManager {
     }
 
     async callFn(name, payload = {}) {
-        const fn = firebase.functions().httpsCallable(name);
-        const res = await fn(payload);
-        return res.data;
+        return await callApi(name, payload);
     }
 
     // Cho tài khoản web đang dùng email giả (đăng ký/nâng cấp trước khi có

@@ -89,9 +89,9 @@
 
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
-    <!-- THÊM MỚI: cần cho Firebase Auth thật + Cloud Functions -->
+    <!-- THÊM MỚI: cần cho Firebase Auth thật -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-functions-compat.js"></script>
+    <!-- KHÔNG cần firebase-functions-compat.js nữa — giờ gọi Vercel API bằng fetch() -->
 
     <!-- ĐỔI: chuyển sang type="module" để dùng import/export -->
     <script type="module" src="js/app.js"></script>
