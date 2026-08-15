@@ -1,0 +1,66 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "data.child('authProvider').val() === 'firebase' ? (auth != null && auth.uid === $uid) : true",
+        ".write": "data.child('authProvider').val() === 'firebase' ? false : true"
+      }
+    },
+    "device_registrations": {
+      "$deviceHash": {
+        ".read": true,
+        ".write": false
+      }
+    },
+    "transactions": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+    "leaderboard": {
+      ".read": true,
+      ".write": false
+    },
+    "admin_config": {
+      ".read": true,
+      ".write": "auth != null && auth.token.admin === true"
+    },
+    "gift_codes": {
+      ".read": true,
+      ".write": true
+    },
+    "code_pools": {
+      ".read": true,
+      ".write": true
+    },
+    "tasks": {
+      ".read": true,
+      ".write": true
+    },
+    "withdraw_requests": {
+      ".read": true,
+      ".write": true
+    },
+    "prize_fund": {
+      ".read": true,
+      ".write": "auth != null && auth.token.admin === true"
+    },
+    "notifications": {
+      ".read": true,
+      ".write": "auth != null && auth.token.admin === true"
+    },
+    "admin_logs": {
+      ".read": "auth != null && auth.token.admin === true",
+      ".write": "auth != null && auth.token.admin === true"
+    },
+    "admin_alerts": {
+      ".read": "auth != null && auth.token.admin === true",
+      ".write": "auth != null && auth.token.admin === true"
+    },
+    "leaderboard_config": {
+      ".read": true,
+      ".write": "auth != null && auth.token.admin === true"
+    }
+  }
+}

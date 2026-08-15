@@ -1,0 +1,23 @@
+# TUYỆT ĐỐI không commit — lộ là mất quyền kiểm soát bot/project
+functions/.env
+functions/.env.*
+!functions/.env.example
+scripts/service-account.json
+
+# Cài đặt local, không cần commit
+node_modules/
+functions/node_modules/
+scripts/node_modules/
+
+# Firebase local
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+.runtimeconfig.json
+
+# Vercel
+.vercel
+
+# Editor/OS
+.DS_Store
+*.log
