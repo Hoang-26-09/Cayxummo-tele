@@ -3,8 +3,8 @@
     "users": {
       ".read": "auth != null && auth.token.admin === true",
       "$uid": {
-        ".read": "data.child('authProvider').val() === 'firebase' ? (auth != null && auth.uid === $uid) : true",
-        ".write": "data.child('authProvider').val() === 'firebase' ? false : true"
+        ".read": "data.child('authProvider').val() === 'firebase' ? (auth != null && (auth.uid === $uid || auth.token.admin === true)) : true",
+        ".write": "data.child('authProvider').val() === 'firebase' ? (auth != null && auth.token.admin === true) : true"
       }
     },
     "device_registrations": {
@@ -21,7 +21,7 @@
     },
     "leaderboard": {
       ".read": true,
-      ".write": false
+      ".write": "auth != null && auth.token.admin === true"
     },
     "admin_config": {
       ".read": true,
