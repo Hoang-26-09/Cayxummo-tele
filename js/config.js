@@ -28,7 +28,7 @@ export const CONFIG = { ...DEFAULT_CONFIG, linkTypes: {} };
 export const firebaseConfig = { 
   apiKey : "AIzaSyDl2tKN1cjxuA5tr_MC-Tph4CORM76_vus" , 
   authDomain : "cayxummo.firebaseapp.com" , 
-  URL cơ sở dữ liệu : "https://cayxummo-default-rtdb.asia-southeast1.firebasedatabase.app" , 
+  databaseURL : "https://cayxummo-default-rtdb.asia-southeast1.firebasedatabase.app" , 
   projectId : "cayxummo" , 
   storageBucket : "cayxummo.firebasestorage.app" , 
   messagingSenderId : "128727893811" , 
