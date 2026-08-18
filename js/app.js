@@ -167,7 +167,21 @@ class CayXumMo {
         const pages = { home: HomePage, tasks: TasksPage, friends: FriendsPage, leaderboard: LeaderboardPage, account: AccountPage, admin: AdminPage };
         if (pages[page]) {
             this.currentPage = new pages[page](this, main, userData);
-            this.currentPage.render();
+            // BUG FIX: trước đây gọi render() không có await — nếu render()
+            // (là hàm async) ném lỗi, lỗi đó biến mất âm thầm (unhandled
+            // promise rejection), màn hình vẫn hiện trang CŨ, trông như
+            // "bấm không có gì xảy ra". Giờ await + try/catch để lỗi thật
+            // sự hiện ra cho người dùng thấy.
+            try {
+                await this.currentPage.render();
+            } catch (e) {
+                console.error(`Lỗi khi tải trang "${page}":`, e);
+                main.innerHTML = `
+                    <div class="card" style="border-color:#ff4757;">
+                        <p style="color:#ff4757;">❌ Không tải được trang này</p>
+                        <p style="font-size:12px;color:var(--text2);">${e.message || e}</p>
+                    </div>`;
+            }
         }
         document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
         const activeBtn = document.querySelector(`.nav-btn[data-page="${page}"]`);

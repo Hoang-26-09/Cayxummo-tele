@@ -1,6 +1,7 @@
 {
   "rules": {
     "users": {
+      ".read": "auth != null && auth.token.admin === true",
       "$uid": {
         ".read": "data.child('authProvider').val() === 'firebase' ? (auth != null && auth.uid === $uid) : true",
         ".write": "data.child('authProvider').val() === 'firebase' ? false : true"
