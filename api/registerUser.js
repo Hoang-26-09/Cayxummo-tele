@@ -3,6 +3,15 @@ const { handlePreflight, HttpError, sendError } = require('./_lib/http');
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Firebase mặc định tự sinh UID dạng chuỗi ngẫu nhiên dài (~28 ký tự,
+// VD: YG8j9UXDVhbkvfflfiJm751lm1T2) — cho phép tự đặt UID lúc tạo, nên
+// đổi sang dạng ngắn, dễ đọc hơn: Uid-<timestamp><4 số ngẫu nhiên>.
+function generateShortUid() {
+    const timestamp = Date.now(); // 13 chữ số
+    const random = Math.floor(1000 + Math.random() * 9000); // 4 chữ số
+    return `Uid-${timestamp}${random}`;
+}
+
 module.exports = async (req, res) => {
     if (handlePreflight(req, res)) return;
     if (req.method !== 'POST') return res.status(405).end();
@@ -26,16 +35,16 @@ module.exports = async (req, res) => {
         const usernameSnap = await db.ref('users').orderByChild('username').equalTo(u).once('value');
         if (usernameSnap.exists()) throw new HttpError(409, 'already-exists', 'Tên đăng nhập đã tồn tại!');
 
-        let userRecord;
+        const uid = generateShortUid();
         try {
-            userRecord = await admin.auth().createUser({ email: em, password: pw, displayName: u });
+            await admin.auth().createUser({ uid, email: em, password: pw, displayName: u });
         } catch (e) {
             if (e.code === 'auth/email-already-exists') throw new HttpError(409, 'already-exists', 'Email này đã được dùng cho tài khoản khác!');
+            if (e.code === 'auth/uid-already-exists') throw new HttpError(500, 'internal', 'Trùng ID hiếm gặp, vui lòng thử đăng ký lại');
             console.error('registerUser error:', e);
             throw new HttpError(500, 'internal', 'Có lỗi khi tạo tài khoản, thử lại sau');
         }
 
-        const uid = userRecord.uid;
         const now = Date.now();
         const updates = {};
         updates['users/' + uid] = {
