@@ -10,14 +10,23 @@
  *      "service-account.json", để CÙNG THƯ MỤC với file này.
  *      (File này TUYỆT ĐỐI không commit lên Git / chia sẻ cho ai)
  *   2. npm install firebase-admin   (chạy trong thư mục scripts/)
- *   3. node set-admin.js <uid-hoặc-username>
+ *   3. node set-admin.js <uid-hoặc-username> [databaseURL tùy chọn]
+ *
+ * databaseURL: mặc định tự đoán từ project_id trong file service-account
+ * (dạng https://<project_id>-default-rtdb.asia-southeast1.firebasedatabase.app).
+ * Nếu Database của bạn ở region khác (không phải asia-southeast1), truyền
+ * tay URL đúng làm tham số thứ 2, VD:
+ *   node set-admin.js myuid https://myproject-default-rtdb.firebaseio.com
  */
 const admin = require('firebase-admin');
 const serviceAccount = require('./service-account.json');
 
+const databaseURL = process.argv[3]
+    || `https://${serviceAccount.project_id}-default-rtdb.asia-southeast1.firebasedatabase.app`;
+
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: 'https://cay-xu-mmo-default-rtdb.asia-southeast1.firebasedatabase.app'
+    databaseURL
 });
 
 async function main() {

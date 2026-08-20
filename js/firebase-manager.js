@@ -27,7 +27,8 @@ export class FirebaseManager {
             bgColor1: saved.bgColor1 || DEFAULT_CONFIG.bgColor1,
             bgColor2: saved.bgColor2 || DEFAULT_CONFIG.bgColor2,
             codeResetDays: saved.codeResetDays || DEFAULT_CONFIG.codeResetDays,
-            linkTypes: saved.linkTypes || DEFAULT_CONFIG.linkTypes
+            linkTypes: saved.linkTypes || DEFAULT_CONFIG.linkTypes,
+            socialLinks: saved.socialLinks || DEFAULT_CONFIG.socialLinks
         };
         // CONFIG is a shared object reference imported everywhere else, so we
         // mutate it in place instead of reassigning (reassigning `CONFIG =`

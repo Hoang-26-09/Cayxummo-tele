@@ -42,8 +42,9 @@ export class AccountPage {
             <div class="card"><div class="card-title">💱 Tỷ giá</div><p>3.000 🪙 = ${(1000 * rate).toLocaleString()}đ</p></div>
             <div class="card">
                 <div class="card-title">📢 Tham gia Group</div>
-                <button class="btn btn-primary" id="btnJoinCodeGroup" style="margin-bottom:8px;">📋 Group Code</button>
-                <button class="btn btn-primary" id="btnJoinNotifyGroup">🔔 Group Thông báo</button>
+                ${(CONFIG.socialLinks || []).map((link, i) =>
+                    `<button class="btn btn-primary social-link-btn" data-url="${link.url}" style="${i < CONFIG.socialLinks.length - 1 ? 'margin-bottom:8px;' : ''}">${link.icon || '🔗'} ${link.name}</button>`
+                ).join('') || '<p style="color:var(--text2);font-size:13px;">Chưa có group nào</p>'}
             </div>
             <div class="card">
                 <div class="card-title">🎁 Gift Code</div>
@@ -61,17 +62,13 @@ export class AccountPage {
             <div class="card"><div class="card-title">📜 Lịch sử rút</div><div id="wdHistory">Đang tải...</div></div>
         `;
 
-        document.getElementById('btnJoinCodeGroup').onclick = () => {
-            const link = 'https://t.me/CodeXummo';
-            if (this.app.tg) this.app.tg.openLink(link);
-            else window.open(link, '_blank');
-        };
-
-        document.getElementById('btnJoinNotifyGroup').onclick = () => {
-            const link = 'https://t.me/Cayxummo';
-            if (this.app.tg) this.app.tg.openLink(link);
-            else window.open(link, '_blank');
-        };
+        this.container.querySelectorAll('.social-link-btn').forEach(btn => {
+            btn.onclick = () => {
+                const link = btn.dataset.url;
+                if (this.app.tg) this.app.tg.openLink(link);
+                else window.open(link, '_blank');
+            };
+        });
 
         if (isFakeEmail) {
             document.getElementById('btnAddRecoveryEmail').onclick = async () => {

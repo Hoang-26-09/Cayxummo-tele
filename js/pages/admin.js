@@ -34,6 +34,7 @@ export class AdminPage {
                 <button class="admin-tab" data-tab="logs">📝 Log</button>
                 <button class="admin-tab" data-tab="security">🛡️ Bảo mật</button>
                 <button class="admin-tab" data-tab="theme">🎨 Giao diện</button>
+                <button class="admin-tab" data-tab="grouplinks">🔗 Group Links</button>
                 <button class="admin-tab" data-tab="history">📊 Lịch sử</button>
             </div>
             <div id="adminTabContent"></div>
@@ -654,6 +655,107 @@ export class AdminPage {
                     btn.disabled = false;
                 }
             };
+        }
+
+        else if (tab === 'grouplinks') {
+            const links = CONFIG.socialLinks || [];
+            let listHTML = links.map((link, i) => `
+                <div style="display:flex;gap:8px;align-items:center;padding:10px;background:rgba(255,255,255,0.05);border-radius:8px;margin-bottom:8px;flex-wrap:wrap;">
+                    <span style="font-size:18px;">${link.icon || '🔗'}</span>
+                    <span style="flex:1;min-width:120px;"><b>${link.name}</b><br><span style="font-size:11px;color:var(--text2);">${link.url}</span></span>
+                    <button class="btn-sm btn-primary edit-grouplink" data-index="${i}">✏️ Sửa</button>
+                    <button class="btn-sm btn-danger delete-grouplink" data-index="${i}">🗑️ Xóa</button>
+                </div>`).join('');
+            if (!listHTML) listHTML = '<p style="color:var(--text2);">Chưa có group nào</p>';
+
+            content.innerHTML = `
+                <div class="card">
+                    <div class="card-title">📋 Danh sách nút "Tham gia Group"</div>
+                    <p style="font-size:12px;color:var(--text2);margin-bottom:10px;">Hiện trong tab Tài khoản của người dùng. Thêm bao nhiêu nút cũng được.</p>
+                    ${listHTML}
+                </div>
+                <div class="card">
+                    <div class="card-title">➕ Thêm nút mới</div>
+                    <label>Tên hiển thị:</label><input class="input" id="newGroupName" placeholder="VD: Group Hỗ trợ">
+                    <label>Icon (emoji):</label><input class="input" id="newGroupIcon" value="🔗">
+                    <label>Link:</label><input class="input" id="newGroupUrl" placeholder="https://t.me/...">
+                    <button class="btn btn-success" id="addGroupLink">➕ Thêm</button>
+                </div>
+            `;
+
+            document.getElementById('addGroupLink').onclick = async () => {
+                const name = document.getElementById('newGroupName').value.trim();
+                const icon = document.getElementById('newGroupIcon').value.trim() || '🔗';
+                const url = document.getElementById('newGroupUrl').value.trim();
+                if (!name || !url) return this.app.toast('Nhập đủ tên và link!', 'warning');
+                const btn = document.getElementById('addGroupLink');
+                const originalText = btn.textContent;
+                btn.textContent = '⏳...';
+                btn.disabled = true;
+                try {
+                    const newLinks = [...(CONFIG.socialLinks || []), { name, icon, url }];
+                    await FB.db.ref('admin_config/socialLinks').set(newLinks);
+                    await FB.loadConfig();
+                    this.app.toast('Đã thêm!', 'success');
+                    this.loadTab('grouplinks');
+                } catch (e) {
+                    this.app.toast('Có lỗi xảy ra!', 'error');
+                } finally {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
+            };
+
+            this.container.querySelectorAll('.delete-grouplink').forEach(btn => {
+                btn.onclick = async () => {
+                    const idx = parseInt(btn.dataset.index);
+                    if (!confirm(`Xóa "${links[idx].name}"?`)) return;
+                    try {
+                        const newLinks = (CONFIG.socialLinks || []).filter((_, i) => i !== idx);
+                        await FB.db.ref('admin_config/socialLinks').set(newLinks);
+                        await FB.loadConfig();
+                        this.app.toast('Đã xóa!', 'success');
+                        this.loadTab('grouplinks');
+                    } catch (e) {
+                        this.app.toast('Có lỗi xảy ra!', 'error');
+                    }
+                };
+            });
+
+            this.container.querySelectorAll('.edit-grouplink').forEach(btn => {
+                btn.onclick = () => {
+                    const idx = parseInt(btn.dataset.index);
+                    const link = links[idx];
+                    content.innerHTML = `
+                        <div class="card">
+                            <div class="card-title">✏️ Sửa: ${link.name}</div>
+                            <label>Tên hiển thị:</label><input class="input" id="editGroupName" value="${link.name}">
+                            <label>Icon (emoji):</label><input class="input" id="editGroupIcon" value="${link.icon || '🔗'}">
+                            <label>Link:</label><input class="input" id="editGroupUrl" value="${link.url}">
+                            <div style="display:flex;gap:10px;margin-top:15px;">
+                                <button class="btn btn-primary" id="saveEditGroupLink">💾 Lưu</button>
+                                <button class="btn btn-warning" id="cancelEditGroupLink">↩️ Quay lại</button>
+                            </div>
+                        </div>`;
+                    document.getElementById('cancelEditGroupLink').onclick = () => this.loadTab('grouplinks');
+                    document.getElementById('saveEditGroupLink').onclick = async () => {
+                        const name = document.getElementById('editGroupName').value.trim();
+                        const icon = document.getElementById('editGroupIcon').value.trim() || '🔗';
+                        const url = document.getElementById('editGroupUrl').value.trim();
+                        if (!name || !url) return this.app.toast('Nhập đủ tên và link!', 'warning');
+                        try {
+                            const newLinks = [...(CONFIG.socialLinks || [])];
+                            newLinks[idx] = { name, icon, url };
+                            await FB.db.ref('admin_config/socialLinks').set(newLinks);
+                            await FB.loadConfig();
+                            this.app.toast('Đã cập nhật!', 'success');
+                            this.loadTab('grouplinks');
+                        } catch (e) {
+                            this.app.toast('Có lỗi xảy ra!', 'error');
+                        }
+                    };
+                };
+            });
         }
     }
 }

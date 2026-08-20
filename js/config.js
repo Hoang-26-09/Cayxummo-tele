@@ -18,19 +18,27 @@ export const DEFAULT_CONFIG = {
     // BUG FIX: this was missing in the original file, so
     // `CONFIG.linkTypes = DEFAULT_CONFIG.linkTypes` always produced `undefined`
     // until an admin saved at least one link type from Firebase.
-    linkTypes: {}
+    linkTypes: {},
+    // Danh sách nút "Tham gia Group" trong tab Tài khoản - admin sửa/thêm/xóa
+    // được qua Admin Panel (tab "🔗 Group Links"), không còn cố định trong code.
+    socialLinks: [
+        { name: 'Group Code', icon: '📋', url: 'https://t.me/CodeXummo' },
+        { name: 'Group Thông báo', icon: '🔔', url: 'https://t.me/Cayxummo' }
+    ]
 };
 
 // Live config, populated by FirebaseManager.loadConfig().
 // Kept as a single mutable object (rather than reassigned) so every module
 // that imports CONFIG always sees the latest values without re-importing.
 export const CONFIG = { ...DEFAULT_CONFIG, linkTypes: {} };
-export const firebaseConfig = { 
-  apiKey : "AIzaSyDl2tKN1cjxuA5tr_MC-Tph4CORM76_vus" , 
-  authDomain : "cayxummo.firebaseapp.com" , 
-  databaseURL : "https://cayxummo-default-rtdb.asia-southeast1.firebasedatabase.app" , 
-  projectId : "cayxummo" , 
-  storageBucket : "cayxummo.firebasestorage.app" , 
-  messagingSenderId : "128727893811" , 
-  appId : "1:128727893811:web:51524a6089cbe8ea7ba046" 
+
+export const firebaseConfig = {
+    apiKey: "AIzaSyCbevkIQrQ7vw7RegFrYfTL86z-8feHtUM",
+    authDomain: "cay-xu-mmo.firebaseapp.com",
+    databaseURL: "https://cay-xu-mmo-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "cay-xu-mmo",
+    storageBucket: "cay-xu-mmo.firebasestorage.app",
+    messagingSenderId: "186442076157",
+    appId: "1:186442076157:web:52d64c0239b0ae2d35d394",
+    measurementId: "G-KLCC12WSG5"
 };
