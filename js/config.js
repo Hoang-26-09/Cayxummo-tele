@@ -33,12 +33,11 @@ export const DEFAULT_CONFIG = {
 export const CONFIG = { ...DEFAULT_CONFIG, linkTypes: {} };
 
 export const firebaseConfig = {
-    apiKey: "AIzaSyCbevkIQrQ7vw7RegFrYfTL86z-8feHtUM",
-    authDomain: "cay-xu-mmo.firebaseapp.com",
-    databaseURL: "https://cay-xu-mmo-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "cay-xu-mmo",
-    storageBucket: "cay-xu-mmo.firebasestorage.app",
-    messagingSenderId: "186442076157",
-    appId: "1:186442076157:web:52d64c0239b0ae2d35d394",
-    measurementId: "G-KLCC12WSG5"
+    apiKey: "AIzaSyDl2tKN1cjxuA5tr_MC-Tph4CORM76_vus",
+    authDomain: "cayxummo.firebaseapp.com",
+    databaseURL: "https://cayxummo-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "cayxummo",
+    storageBucket: "cayxummo.firebasestorage.app",
+    messagingSenderId: "128727893811",
+    appId: "1:128727893811:web:51524a6089cbe8ea7ba046"
 };
